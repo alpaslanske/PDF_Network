@@ -69,6 +69,7 @@ class MainWindow(QMainWindow):
         self.btn_search = QPushButton()
         self.dash_title = QLabel()
         self.dash_recent_lbl = QLabel()
+        self.btn_dashboard = QPushButton()  # YENİ EKLENDİ
 
         # Sinyaller
         self.viewer.zoom_changed.connect(self.update_zoom_label)
@@ -104,6 +105,8 @@ class MainWindow(QMainWindow):
         self.update_page_label()
         self.update_zoom_label()
 
+        self.btn_dashboard.setText(t("btn_dashboard"))
+        self.update_dashboard_button()
         self.page_edit.setPlaceholderText(t("ph_page"))
         self.btn_open.setText(t("btn_open"))
         self.btn_group.setText(t("btn_group"))
@@ -150,6 +153,7 @@ class MainWindow(QMainWindow):
         toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.setSpacing(4)
 
+        self.btn_dashboard.clicked.connect(self.toggle_dashboard)
         self.btn_open.clicked.connect(self.open_pdf)
         self.btn_prev.clicked.connect(self.previous_page)
         self.btn_next.clicked.connect(self.next_page)
@@ -165,12 +169,13 @@ class MainWindow(QMainWindow):
         self.combo_lang.setMinimumWidth(85)
         self.combo_lang.currentIndexChanged.connect(self.lang_degistir)
 
-        for btn in (self.btn_print, self.btn_open, self.btn_prev, self.btn_next,
+        for btn in (self.btn_dashboard, self.btn_print, self.btn_open, self.btn_prev, self.btn_next,
                     self.btn_zoom_in, self.btn_zoom_out, self.btn_group,
                     self.btn_toggle, self.btn_export, self.page_label,
                     self.zoom_label, self.combo_lang):
             btn.setMaximumHeight(28)
 
+        toolbar.addWidget(self.btn_dashboard)
         toolbar.addWidget(self.btn_open)
         toolbar.addWidget(self.btn_print)
         toolbar.addWidget(self.btn_export)
@@ -272,10 +277,19 @@ class MainWindow(QMainWindow):
             }
         """)
         self.history_list.itemDoubleClicked.connect(self.open_from_dashboard)
+        # --- YENİ EKLENEN KISIM: SAĞ TIK VE KLAVYE DESTEĞİ ---
+        self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.history_list.customContextMenuRequested.connect(self.show_dashboard_menu)
+        # Delete tuşunu algılaması için keyPressEvent'i eziyoruz (override)
+        self.history_list.keyPressEvent = self.history_key_press_event
+        # -----------------------------------------------------
+
         dash_layout.addWidget(self.history_list, 1)
 
         self.right_stack.addWidget(self.dashboard_widget)
         self.right_stack.addWidget(self.viewer)
+
+        self.right_stack.currentChanged.connect(self.update_dashboard_button)
 
         self.splitter.addWidget(self.right_stack)
         self.splitter.addWidget(search_panel)
@@ -296,6 +310,31 @@ class MainWindow(QMainWindow):
         if group_id is not None:
             self.selected_group_id = group_id
         self.open_bookmark(item)
+
+    def toggle_dashboard(self):
+        """Arayüzü PDF okuyucu ile Dashboard arasında akıllıca değiştirir."""
+        if self.right_stack.currentIndex() == 1:
+            # Belgedeyiz, ana ekrana dön
+            self.right_stack.setCurrentIndex(0)
+            self.setWindowTitle(t("app_title"))
+        else:
+            # Ana ekrandayız, belge hafızadaysa ona geri dön
+            if getattr(self, "current_pdf", None):
+                self.right_stack.setCurrentIndex(1)
+                self.setWindowTitle(f"{t('app_title')} - {Path(self.current_pdf).name}")
+
+    def update_dashboard_button(self, index=None):
+        """Ekrana (Stack) göre butonun metnini ve durumunu otomatik günceller."""
+        if self.right_stack.currentIndex() == 0:
+            if getattr(self, "current_pdf", None):
+                self.btn_dashboard.setText(t("btn_back_to_doc"))
+                self.btn_dashboard.setEnabled(True)
+            else:
+                self.btn_dashboard.setText(t("btn_dashboard"))
+                self.btn_dashboard.setEnabled(False) # İlk açılışta belge yoksa pasif yap
+        else:
+            self.btn_dashboard.setText(t("btn_dashboard"))
+            self.btn_dashboard.setEnabled(True)
 
     def open_pdf(self):
         default_dir = str(Path.home())
@@ -534,6 +573,59 @@ class MainWindow(QMainWindow):
         self.load_pdf_bookmarks()
         self.right_stack.setCurrentIndex(1)
         self.setWindowTitle(f"{t('app_title')} - {Path(pdf_path).name}")
+
+    def show_dashboard_menu(self, pos):
+        """Dashboard listesine sağ tıklandığında menü açar."""
+        item = self.history_list.itemAt(pos)
+        if not item or item.flags() & Qt.NoItemFlags:
+            return  # "Liste boş" uyarısına tıklandıysa menü açma
+
+        menu = QMenu(self)
+        delete_action = menu.addAction(t("dash_menu_delete"))
+
+        action = menu.exec(self.history_list.mapToGlobal(pos))
+        if action == delete_action:
+            self.delete_from_dashboard(item)
+
+    def history_key_press_event(self, event):
+        """Dashboard listesinde klavye tuşlarını dinler."""
+        if event.key() == Qt.Key_Delete:
+            selected_items = self.history_list.selectedItems()
+            if selected_items:
+                self.delete_from_dashboard(selected_items[0])
+        else:
+            # Diğer tuşlar (ok tuşları vb.) normal çalışmaya devam etsin
+            QListWidget.keyPressEvent(self.history_list, event)
+
+    def delete_from_dashboard(self, item):
+        """Seçili öğeyi history_list'ten ve kalıcı ayarlardan (pdf_history) siler."""
+        if not item or item.flags() & Qt.NoItemFlags:
+            return
+
+        data = item.data(Qt.UserRole)
+        if not data:
+            return
+
+        # 1. Bellekteki (RAM) ana listeden sil
+        # (Dosya yoluna göre arama yapıyoruz çünkü veri yapısı dict veya str olabilir)
+        target_path = data.get("path") if isinstance(data, dict) else data
+        self.pdf_history = [
+            i for i in getattr(self, "pdf_history", [])
+            if (i.get("path") if isinstance(i, dict) else i) != target_path
+        ]
+
+        # 2. Arayüzden (QListWidget) satırı sil
+        row = self.history_list.row(item)
+        self.history_list.takeItem(row)
+
+        # 3. Eğer liste tamamen boşaldıysa "Boş" uyarısını göster
+        if self.history_list.count() == 0:
+            empty_item = QListWidgetItem(t("dash_empty"))
+            empty_item.setFlags(Qt.NoItemFlags)
+            self.history_list.addItem(empty_item)
+
+        # 4. Değişikliği settings.json dosyasına kalıcı olarak kaydet
+        self.save_settings()
 
     def closeEvent(self, event):
         self.save_settings()
@@ -1126,7 +1218,7 @@ if __name__ == "__main__":
                 # Uygulamanın varsayılan fontunu değiştir ve boyutunu ayarla (örn: 10)
                 custom_font = QFont(font_families[0], 10)
                 app.setFont(custom_font)
-                print(f"[SİSTEM] Özel font yüklendi: {font_families[0]}")
+                #print(f"[SİSTEM] Özel font yüklendi: {font_families[0]}")
         else:
             print("[HATA] font.ttf dosyası okunamadı, sistem fontu kullanılacak.")
     else:

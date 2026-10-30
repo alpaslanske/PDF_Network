@@ -113,8 +113,13 @@ METINLER = {
         "link_wiz_newfile": "[ Dosyadan yeni belge seç... ]",
         "link_wiz_q1": "Hedef PDF Dökümanını Seçin:",
         "link_wiz_open": "Bağlantı Kurulacak Yeni PDF'i Seçin",
+        "dash_menu_delete": "Geçmişten Sil",
+        "btn_dashboard": "🏠 Ana Ekran",
+        "btn_back_to_doc": "📄 Belgeye Dön",
         "link_wiz_q2": "'{}' için hedef sayfa:"
     },
+
+
     "en": {
         "app_title": "PDF Bookmark Network V1",
         "lbl_page": "Page: {}/{}",
@@ -227,6 +232,9 @@ METINLER = {
         "link_wiz_newfile": "[ Select new document from file... ]",
         "link_wiz_q1": "Select Target PDF Document:",
         "link_wiz_open": "Select New PDF to Link",
+        "dash_menu_delete": "Remove from History",
+        "btn_dashboard": "🏠 Dashboard",
+        "btn_back_to_doc": "📄 Back to Document",
         "link_wiz_q2": "Target page for '{}':"
     }
 }
