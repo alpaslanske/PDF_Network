@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 from database import Database
 from widgets.bookmark_tree import BookmarkTree
 from widgets.pdf_viewer import PDFViewer
-from lang import t, set_lang
+from lang import t, set_lang, METINLER
 
 sys.dont_write_bytecode = True
 
@@ -313,9 +313,14 @@ class MainWindow(QMainWindow):
 
     def load_pdf_bookmarks(self):
         pdf_root_name = t("pdf_bookmarks_root")
+
+        # lang.py içerisindeki TÜM dillerin belge yer imi başlıklarını dinamik olarak bir listeye alıyoruz
+        possible_roots = [dil_sozlugu.get("pdf_bookmarks_root") for dil_sozlugu in METINLER.values()]
+
         for i in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(i)
-            if item.text(0) in (pdf_root_name, "📘 Belge Yer İmleri", "📘 Document Bookmarks"):
+            # Manuel yazılmış metinler yerine doğrudan bu dinamik listeyi kontrol ediyoruz
+            if item.text(0) in possible_roots:
                 self.tree.takeTopLevelItem(i)
                 break
 
@@ -1103,9 +1108,31 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, t("msg_error"), str(e))
 
 if __name__ == "__main__":
+    from PySide6.QtGui import QFontDatabase, QFont
+
     app = QApplication(sys.argv)
     app.setApplicationName("PDF_Network")
     app.setDesktopFileName("PDF_Network")
+
+    # --- HARİCİ FONT YÜKLEME SİSTEMİ ---
+    font_path = PROJE_ANA_DIZINI / "font.ttf"
+    if font_path.exists():
+        # Font dosyasını belleğe yükle
+        font_id = QFontDatabase.addApplicationFont(str(font_path))
+        if font_id != -1:
+            # Yüklenen fontun aile adını al (Örn: "Roboto", "Open Sans")
+            font_families = QFontDatabase.applicationFontFamilies(font_id)
+            if font_families:
+                # Uygulamanın varsayılan fontunu değiştir ve boyutunu ayarla (örn: 10)
+                custom_font = QFont(font_families[0], 10)
+                app.setFont(custom_font)
+                print(f"[SİSTEM] Özel font yüklendi: {font_families[0]}")
+        else:
+            print("[HATA] font.ttf dosyası okunamadı, sistem fontu kullanılacak.")
+    else:
+        print("[SİSTEM] font.ttf bulunamadı, varsayılan sistem fontu kullanılıyor.")
+    # -----------------------------------
+
     window = MainWindow()
     if len(sys.argv) > 1:
         initial_pdf = sys.argv[1]
@@ -1116,5 +1143,6 @@ if __name__ == "__main__":
             window.load_pdf_bookmarks()
             window.setWindowTitle(f"{t('app_title')} - {Path(initial_pdf).name}")
             window.right_stack.setCurrentIndex(1)
+
     window.show()
     sys.exit(app.exec())
