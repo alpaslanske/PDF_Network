@@ -25,8 +25,17 @@ from widgets.bookmark_tree import BookmarkTree
 from widgets.pdf_viewer import PDFViewer
 from lang import t, set_lang, METINLER
 
-PROJE_ANA_DIZINI = Path(os.path.realpath(__file__)).parent
-os.chdir(PROJE_ANA_DIZINI)
+def get_system_documents_dir():
+    # Eğer uygulama AppImage paketi olarak çalışıyorsa gerçek klasörü bulur,
+    # Normal Python dosyası olarak çalışıyorsa bulunduğu klasörü bulur.
+    if "APPIMAGE" in os.environ:
+        return Path(os.environ["APPIMAGE"]).parent
+    else:
+        return Path(os.path.realpath(__file__)).parent
+
+LocationForBookmarks = get_system_documents_dir()
+PROJE_ANA_DIZINI = LocationForBookmarks
+#PROJE_ANA_DIZINI = DB_DIR / "data" / "bookmarks.db"
 
 class NoteBrowser(QTextBrowser):
     def __init__(self, parent=None):

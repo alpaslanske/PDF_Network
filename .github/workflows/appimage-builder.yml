@@ -1,0 +1,71 @@
+name: AppImage Otomatik Paketleme
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers only on version tags like v1.3.6
+
+# Grants write privileges to create releases and upload binary files
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. Checkout repository files
+    - name: Kodları Çek
+      uses: actions/checkout@v4
+
+    # 2. Setup the Python runtime environment
+    - name: Python Ayarla
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    # 3. Resolve internal Python dependencies
+    - name: Bağımlılıkları Yükle
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+    # 4. Generate the modern launcher desktop shortcut
+    - name: Masaüstü Başlatıcı Dosyasını Oluştur
+      run: |
+        cat << 'EOF' > PDF_Network.desktop
+        [Desktop Entry]
+        Type=Application
+        Name=PDF_Network
+        Exec=pdf_network.py
+        Icon=icon
+        Categories=Utility;
+        Terminal=true
+        EOF
+
+    # 5. Download and mount the official packaging runtime compiler
+    - name: AppImage Hazırla
+      run: |
+        wget https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+        chmod +x appimagetool-x86_64.AppImage
+
+        # Enforce proper execution boundaries
+        chmod a+x pdf_network.py
+        ln -sf pdf_network.py AppRun
+        chmod a+x AppRun
+        chmod -R a+rX .
+
+    # 6. Build the highly compressed standalone binary
+    - name: AppImage Derle
+      run: |
+        ARCH=x86_64 ./appimagetool-x86_64.AppImage .
+        mv PDF_Network-x86_64.AppImage PDF_Network_Portable-x86_64.AppImage
+
+    # 7. Atomically ship the binary payload to the GitHub Releases section
+    - name: GitHub Release Olarak Yayınla
+      uses: softprops/action-gh-release@v2
+      with:
+        files: PDF_Network_Portable-x86_64.AppImage
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

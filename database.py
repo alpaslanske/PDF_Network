@@ -3,7 +3,12 @@ import sqlite3
 from pathlib import Path
 
 def get_system_documents_dir():
-    return Path(os.path.realpath(__file__)).parent
+    # Eğer uygulama AppImage paketi olarak çalışıyorsa gerçek klasörü bulur,
+    # Normal Python dosyası olarak çalışıyorsa bulunduğu klasörü bulur.
+    if "APPIMAGE" in os.environ:
+        return Path(os.environ["APPIMAGE"]).parent
+    else:
+        return Path(os.path.realpath(__file__)).parent
 
 LocationForBookmarks = get_system_documents_dir()
 DB_DIR = LocationForBookmarks
