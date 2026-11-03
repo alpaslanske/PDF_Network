@@ -34,7 +34,7 @@ jobs:
     # 4. PyInstaller ile projeyi tek parça .exe haline getir
     - name: Windows EXE Derle
       run: |
-        pyinstaller --onefile --windowed --name="PDF_Network_Portable" --add-data "lang.py;." --add-data "database.py;." --add-data "widgets;widgets" main.py
+        pyinstaller --onefile --windowed --name="PDF_Network_Portable" --add-data "lang.py;." --add-data "database.py;." --add-data "widgets;widgets" pdf_network.py
 
     # 5. Oluşan .exe dosyasını otomatik olarak GitHub Releases'a yükle
     - name: GitHub Release Olarak Yayınla
