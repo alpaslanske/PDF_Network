@@ -1,0 +1,20 @@
+Sistem Bağımlılıkları (İşletim Sistemine Kurulması Gerekenler)
+
+pytesseract kütüphanesinin arka planda asıl işi yapan aracı tetikleyebilmesi için Linux dağıtımınızda Tesseract OCR motorunun ve Türkçe dil paketinin kurulu olması gerekir.
+
+🔵 Arch Linux / Manjaro:
+
+bash
+sudo pacman -S tesseract tesseract-data-tur tesseract-data-eng tesseract-data-pol
+
+🟠 Ubuntu / Debian / Linux Mint:
+
+bash
+sudo apt update
+sudo apt install tesseract-ocr tesseract-ocr-tur tesseract-ocr-eng tesseract-ocr-pol
+
+🔴 Fedora / Red Hat:
+
+bash
+sudo dnf install tesseract tesseract-langpack-tur tesseract-langpack-eng tesseract-langpack-pol
+

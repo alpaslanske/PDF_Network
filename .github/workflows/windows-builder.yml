@@ -1,0 +1,45 @@
+name: Windows EXE Otomatik Paketleme
+
+on:
+  push:
+    tags:
+      - 'v*' # Sadece v1.0.0 gibi sürüm etiketleri atıldığında çalışır
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest # GitHub Actions üzerinde Windows sunucusu ayağa kaldırır
+
+    steps:
+    # 1. GitHub'daki kodları sanal makineye çek
+    - name: Kodları Çek
+      uses: actions/checkout@v4
+
+    # 2. Windows sunucusuna Python kurulumu yap
+    - name: Python Ayarla
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    # 3. requirements.txt dosyasındaki bağımlılıkları ve PyInstaller'ı yükle
+    - name: Bağımlılıkları ve PyInstaller'ı Yükle
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    # 4. PyInstaller ile projeyi tek parça .exe haline getir
+    - name: Windows EXE Derle
+      run: |
+        pyinstaller --onefile --windowed --name="PDF_Network_Portable" --add-data "lang.py;." --add-data "database.py;." --add-data "widgets;widgets" pdf_network.py
+
+    # 5. Oluşan .exe dosyasını otomatik olarak GitHub Releases'a yükle
+    - name: GitHub Release Olarak Yayınla
+      uses: softprops/action-gh-release@v2
+      with:
+        files: dist/PDF_Network_Portable.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

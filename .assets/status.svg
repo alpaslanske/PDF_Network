@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="106"
+   height="20"
+   role="img"
+   aria-label="made in: ukraine"
+   version="1.1"
+   id="svg11"
+   sodipodi:docname="status.svg"
+   inkscape:version="1.4.4 (dcaf3e7d9e, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <defs
+     id="defs11">
+    <linearGradient
+       id="linearGradient11"
+       x2="0"
+       y2="46.043457"
+       gradientTransform="scale(2.3021729,0.43437224)"
+       x1="0"
+       y1="0"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#bbb"
+         stop-opacity=".1"
+         id="stop1-1" />
+      <stop
+         offset="1"
+         stop-opacity=".1"
+         id="stop2-8" />
+    </linearGradient>
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#s"
+       id="linearGradient12"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="matrix(2.3021729,0,0,0.43437224,-2.5040084,-25.707821)"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="46.043458" />
+    <filter
+       id="blur-2"
+       x="-0.089164626"
+       y="-0.4510651"
+       width="1.1783293"
+       height="1.9021302">
+      <feGaussianBlur
+         stdDeviation="16"
+         id="feGaussianBlur1-3" />
+    </filter>
+    <filter
+       id="filter2"
+       x="-0.097264484"
+       y="-0.45106509"
+       width="1.1945291"
+       height="1.9021302">
+      <feGaussianBlur
+         stdDeviation="16"
+         id="feGaussianBlur2" />
+    </filter>
+  </defs>
+  <sodipodi:namedview
+     id="namedview11"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="5.9903952"
+     inkscape:cx="61.932475"
+     inkscape:cy="11.434972"
+     inkscape:window-width="1920"
+     inkscape:window-height="1008"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="g7-9" />
+  <title
+     id="title1">made in: ukraine</title>
+  <filter
+     id="blur"
+     x="-0.097264486"
+     y="-0.4510651"
+     width="1.194529"
+     height="1.9021302">
+    <feGaussianBlur
+       stdDeviation="16"
+       id="feGaussianBlur1" />
+  </filter>
+  <linearGradient
+     id="s"
+     x2="0"
+     y2="46.043458"
+     gradientTransform="scale(2.3021729,0.43437224)"
+     x1="0"
+     y1="0"
+     gradientUnits="userSpaceOnUse">
+    <stop
+       offset="0"
+       stop-color="#bbb"
+       stop-opacity=".1"
+       id="stop1" />
+    <stop
+       offset="1"
+       stop-opacity=".1"
+       id="stop2" />
+  </linearGradient>
+  <clipPath
+     id="r">
+    <rect
+       width="106"
+       height="20"
+       rx="3"
+       id="rect2" />
+  </clipPath>
+  <g
+     id="g12"
+     transform="translate(2.5040083,25.707821)">
+    <rect
+       width="55"
+       height="20"
+       fill="#0057b7"
+       id="rect3-9"
+       x="-2.5040083"
+       y="-25.707821" />
+    <rect
+       x="52.495991"
+       width="51"
+       height="20"
+       fill="#ffd700"
+       id="rect4-2"
+       y="-25.707821"
+       style="fill:#ff0000" />
+    <rect
+       width="106"
+       height="20"
+       fill="url(#s)"
+       id="rect5-0"
+       x="-2.5040083"
+       y="-25.707821"
+       style="fill:url(#linearGradient12)" />
+  </g>
+  <g
+     transform="matrix(0.1,0,0,0.1,-2.7877307,-0.89917018)"
+     id="g7-9"
+     style="font-size:110px;font-family:Verdana, Geneva, 'DejaVu Sans', sans-serif;text-anchor:middle;fill:#ffffff;text-rendering:geometricPrecision">
+    <g
+       aria-hidden="true"
+       fill="#010101"
+       id="g6-2">
+      <text
+         x="285"
+         y="150"
+         fill-opacity="0.8"
+         filter="url(#blur)"
+         textLength="450"
+         id="text5-2"
+         lengthAdjust="spacing"
+         style="filter:url(#blur-2)">made in</text>
+      <text
+         x="285"
+         y="150"
+         fill-opacity="0.3"
+         textLength="450"
+         id="text6-8"
+         lengthAdjust="spacing">made in</text>
+    </g>
+    <text
+       x="285"
+       y="140"
+       textLength="450"
+       id="text7-9"
+       lengthAdjust="spacing"
+       style="font-size:120px">status</text>
+  </g>
+  <text
+     x="795"
+     y="140"
+     textLength="410"
+     fill="#333333"
+     id="text10-2"
+     lengthAdjust="spacing"
+     transform="matrix(0.12026339,0,0,0.1,-16.379258,-2.8200686)"
+     style="font-size:80px;font-family:Verdana, Geneva, 'DejaVu Sans', sans-serif;text-anchor:middle;fill:#ffffff;text-rendering:geometricPrecision">development</text>
+  <metadata
+     id="metadata1">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:title>made in: ukraine</dc:title>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+</svg>
