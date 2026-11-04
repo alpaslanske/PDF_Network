@@ -35,7 +35,6 @@ def get_system_documents_dir():
 
 LocationForBookmarks = get_system_documents_dir()
 PROJE_ANA_DIZINI = LocationForBookmarks
-#PROJE_ANA_DIZINI = DB_DIR / "data" / "bookmarks.db"
 
 class NoteBrowser(QTextBrowser):
     def __init__(self, parent=None):
@@ -375,6 +374,7 @@ class MainWindow(QMainWindow):
         new_viewer.highlightRequested.connect(self.create_highlight)
         new_viewer.deleteHighlightRequested.connect(self.delete_highlight)
         new_viewer.exportTableRequested.connect(self.export_table_to_excel)
+        new_viewer.addNoteRequested.connect(self.add_page_note)
 
         new_viewer.open_pdf(pdf_path)
         new_viewer.goto_position(page, x, y)
@@ -930,15 +930,46 @@ class MainWindow(QMainWindow):
         viewer.goto_page(page)
         self.update_page_label()
 
+    def _save_and_reload_pdf(self, viewer):
+        """
+        PDF dosyasını durumuna göre en performanslı şekilde kaydeder.
+        Onarılmış (bozuk) PDF ise tam inşa yapar, sağlamsa çok hızlı artımlı (saveIncr) kaydeder.
+        """
+        try:
+            if getattr(viewer.doc, "is_repaired", False):
+                temp_path = viewer.current_file_path + ".tmp.pdf"
+                # garbage=4 ve deflate=True ile PDF'in yapısını tüm çöplerden temizle ve sıkıştır
+                viewer.doc.save(temp_path, garbage=4, deflate=True)
+                viewer.doc.close()
+
+                import os
+                os.replace(temp_path, viewer.current_file_path)
+                viewer.doc = pymupdf.open(viewer.current_file_path)
+            else:
+                viewer.doc.saveIncr()
+
+            viewer.render_page()
+        except Exception as e:
+            QMessageBox.warning(self, t("msg_error"), f"Kaydetme işlemi başarısız: {e}")
+
     def create_highlight(self, page_no, x0, y0, x1, y1):
         viewer = self.sender()
         if not viewer or not viewer.doc: return
         try:
             page = viewer.doc[page_no]
             rect = pymupdf.Rect(x0, y0, x1, y1)
-            page.add_highlight_annot(rect)
-            viewer.doc.saveIncr()
-            viewer.render_page()
+
+            # Tam ve keskin bir dikdörtgen (Square Annotation) ekliyoruz
+            annot = page.add_rect_annot(rect)
+
+            # İçini ve dışını sarı yapıp şeffaflık (opacity) uyguluyoruz
+            annot.set_colors(stroke=(1, 1, 0), fill=(1, 1, 0)) # Sarı renk
+            annot.set_opacity(0.4) # Highlight hissi vermek için %40 saydam
+            annot.update()
+
+            # Tekrarlayan kodu yardımcı fonksiyona yolladık
+            self._save_and_reload_pdf(viewer)
+
         except Exception as e:
             QMessageBox.warning(self, t("msg_error"), t("err_highlight_readonly").format(e))
 
@@ -951,14 +982,57 @@ class MainWindow(QMainWindow):
             annot = page.first_annot
             while annot:
                 next_annot = annot.next
+                # Tıkladığımız nokta (x, y) notun/vurgunun sınırları içindeyse sil!
                 if annot.rect.contains(point):
                     page.delete_annot(annot)
-                    viewer.doc.saveIncr()
-                    viewer.render_page()
+
+                    # Tekrarlayan ve hatalı olan iki defa temp_path atama blokları silindi
+                    self._save_and_reload_pdf(viewer)
                     return
                 annot = next_annot
         except Exception as e:
-            QMessageBox.warning(self, t("msg_error"), t("err_highlight_readonly").format(e))
+            QMessageBox.warning(self, "Hata", f"Silme işlemi başarısız: {e}")
+
+    def add_page_note(self, page_no, x, y):
+        viewer = self.sender()
+        if not viewer or not viewer.doc: return
+
+        # Kullanıcıdan not metnini al
+        text, ok = QInputDialog.getMultiLineText(self, "Sayfaya Not Ekle", "Sayfa üzerine eklenecek notunuzu yazın:")
+        if not ok or not text.strip(): return
+
+        try:
+            page = viewer.doc[page_no]
+
+            # DİNAMİK BOYUT HESAPLAMA
+            lines = text.strip().split('\n')
+            max_len = max([len(line) for line in lines] + [1])
+            total_lines = sum([max(1, len(line) // 35) for line in lines])
+
+            # Genişliği en uzun satıra göre, yüksekliği ise satır sayısına göre otomatik belirle
+            width = min(250, max(100, max_len * 7))
+            height = max(40, total_lines * 16 + 15)
+
+            rect = pymupdf.Rect(x, y, x + width, y + height)
+            rect.normalize()
+
+            # Serbest metin notunu ekle
+            annot = page.add_freetext_annot(
+                rect,
+                text.strip(),
+                fontsize=11,
+                fontname="helv",
+                text_color=(1, 0, 0),
+                fill_color=(1, 1, 0.8)
+            )
+            annot.set_border(width=1)
+            annot.update()
+
+            # Tekrarlayan kodu yardımcı fonksiyona yolladık
+            self._save_and_reload_pdf(viewer)
+
+        except Exception as e:
+            QMessageBox.warning(self, "Hata", f"Not eklenirken hata oluştu: {e}")
 
     def print_pdf(self):
         viewer = self.get_current_viewer()

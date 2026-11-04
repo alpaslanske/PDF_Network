@@ -39,12 +39,14 @@ class OCRThread(QThread):
             self.error.emit(str(e))
 
 class PDFViewer(QScrollArea):
+
     zoom_changed = Signal()
     bookmarkRequested = Signal(int, str, float, float)
     highlightRequested = Signal(int, float, float, float, float)
     deleteHighlightRequested = Signal(int, float, float)
     page_changed = Signal(int)
     exportTableRequested = Signal(int, float, float, float, float)
+    addNoteRequested = Signal(int, float, float)
 
     def __init__(self):
         super().__init__()
@@ -535,19 +537,35 @@ class PDFViewer(QScrollArea):
     def create_highlight(self):
         if not getattr(self, "current_file_path", "").lower().endswith(".pdf"): return
         if self.selection_start is None or self.selection_end is None: return
-        rect = pymupdf.Rect(
-            min(self.selection_start.x(), self.selection_end.x()) / self.zoom,
-            min(self.selection_start.y(), self.selection_end.y()) / self.zoom,
-            max(self.selection_start.x(), self.selection_end.x()) / self.zoom,
-            max(self.selection_start.y(), self.selection_end.y()) / self.zoom,
-        )
-        self.highlightRequested.emit(self.current_page, rect.x0, rect.y0, rect.x1, rect.y1)
 
-    def delete_highlight(self):
-        if self.selection_start is None or self.selection_end is None: return
-        x = min(self.selection_start.x(), self.selection_end.x()) / self.zoom
-        y = min(self.selection_start.y(), self.selection_end.y()) / self.zoom
-        self.deleteHighlightRequested.emit(self.current_page, x, y)
+        page = self.doc[self.current_page]
+
+        # Ekrandaki ham pikseller
+        px0 = min(self.selection_start.x(), self.selection_end.x())
+        py0 = min(self.selection_start.y(), self.selection_end.y())
+        px1 = max(self.selection_start.x(), self.selection_end.x())
+        py1 = max(self.selection_start.y(), self.selection_end.y())
+
+        # Sadece tıklandıysa (genişlik veya yükseklik yoksa) boş kutu hatasını engelle
+        if px0 == px1 or py0 == py1: return
+
+        # PyMuPDF'in ekrana çizerken uyguladığı KESİN matris dizilimi
+        mat = pymupdf.Matrix(self.zoom, self.zoom)
+        tm = page.rotation_matrix * mat
+        rect = page.cropbox * tm
+
+        # 1. Piksellere CropBox boşluğunu ekle
+        p0 = pymupdf.Point(px0, py0) + rect.top_left
+        p1 = pymupdf.Point(px1, py1) + rect.top_left
+
+        # 2. Ters matris (~tm) ile döndürmeyi (rotation) ve ölçeği tamamen geri al
+        inv_tm = ~tm
+        pdf_rect = pymupdf.Rect(p0 * inv_tm, p1 * inv_tm)
+
+        # 3. KESİN ÇÖZÜM: Döndürme sonrası ters dönen eksenleri (x0 > x1) otomatik düzelt
+        pdf_rect.normalize()
+
+        self.highlightRequested.emit(self.current_page, pdf_rect.x0, pdf_rect.y0, pdf_rect.x1, pdf_rect.y1)
 
     def export_table_from_selection(self):
         if self.selection_start is None or self.selection_end is None: return
@@ -573,17 +591,42 @@ class PDFViewer(QScrollArea):
         delete_highlight_action = menu.addAction(t("view_del_highlight"))
         export_table_action = menu.addAction(t("view_export_excel"))
 
+        # YENİ: Sağ tık menüsüne not ekleme butonu
+        add_note_action = menu.addAction("Sayfaya Not Ekle")
+
         is_pdf = getattr(self, "current_file_path", "").lower().endswith(".pdf")
         highlight_action.setEnabled(is_pdf)
         delete_highlight_action.setEnabled(is_pdf)
+        add_note_action.setEnabled(is_pdf) # Sadece PDF'lerde aktif olsun
 
         selected = menu.exec(self.mapToGlobal(pos))
-        if selected == copy_action: self.copy_selected_text(force_ocr=False)
-        elif selected == copy_ocr_action: self.copy_selected_text(force_ocr=True)
-        elif selected == bookmark_action: self.create_bookmark_from_selection()
-        elif selected == highlight_action: self.create_highlight()
-        elif selected == delete_highlight_action: self.delete_highlight()
-        elif selected == export_table_action: self.export_table_from_selection()
+
+        if selected == copy_action:
+            self.copy_selected_text(force_ocr=False)
+        elif selected == copy_ocr_action:
+            self.copy_selected_text(force_ocr=True)
+        elif selected == bookmark_action:
+            self.create_bookmark_from_selection()
+        elif selected == highlight_action:
+            self.create_highlight()
+        elif selected == export_table_action:
+            self.export_table_from_selection()
+
+        # Hem Not Ekleme hem de Vurgu/Not Silme işlemleri için SAĞ TIKLANAN kesin koordinatı kullanıyoruz.
+        elif selected in (add_note_action, delete_highlight_action):
+            page = self.doc[self.current_page]
+            mat = pymupdf.Matrix(self.zoom, self.zoom)
+            tm = page.rotation_matrix * mat
+            rect = page.cropbox * tm
+
+            p = pymupdf.Point(pos.x(), pos.y()) + rect.top_left
+            pdf_p = p * ~tm
+
+            if selected == add_note_action:
+                self.addNoteRequested.emit(self.current_page, pdf_p.x, pdf_p.y)
+            elif selected == delete_highlight_action:
+                # Önceden seçime (kutu çizmeye) ihtiyaç duymadan doğrudan imlecin altını sil komutu gönderir
+                self.deleteHighlightRequested.emit(self.current_page, pdf_p.x, pdf_p.y)
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.ControlModifier:
