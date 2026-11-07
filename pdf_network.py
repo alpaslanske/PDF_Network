@@ -10,31 +10,139 @@ import tempfile
 from pathlib import Path
 
 import pymupdf
-from PySide6.QtCore import Qt, QUrl, QEvent, QStandardPaths
-from PySide6.QtGui import QIcon, QDesktopServices, QPainter, QImage
+from PySide6.QtCore import Qt, QUrl, QEvent, QStandardPaths, QThread, Signal, QThreadPool
+from PySide6.QtGui import QIcon, QDesktopServices, QPainter, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
     QMessageBox, QPushButton, QSplitter, QStackedWidget, QTextBrowser,
-    QTreeWidgetItem, QVBoxLayout, QWidget, QComboBox, QTabWidget
+    QTreeWidgetItem, QVBoxLayout, QWidget, QComboBox, QTabWidget, QProgressDialog,
+    QScrollArea, QGridLayout
 )
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 
 from database import Database
 from widgets.bookmark_tree import BookmarkTree
 from widgets.pdf_viewer import PDFViewer
-from lang import t, set_lang, METINLER
+from lang import t, set_lang
+from widgets.text_doc_viewer import TextDocViewer
+from widgets.recent_file_card import RecentFileCard
+from widgets.pdf_workers import TableExportWorker, PDFPrintWorker, ThumbnailWorker
 
-def get_system_documents_dir():
-    # Eğer uygulama AppImage paketi olarak çalışıyorsa gerçek klasörü bulur,
-    # Normal Python dosyası olarak çalışıyorsa bulunduğu klasörü bulur.
-    if "APPIMAGE" in os.environ:
-        return Path(os.environ["APPIMAGE"]).parent
-    else:
-        return Path(os.path.realpath(__file__)).parent
 
-LocationForBookmarks = get_system_documents_dir()
-PROJE_ANA_DIZINI = LocationForBookmarks
+class OfficeConvertWorker(QThread):
+    finished = Signal(str, str, int, float, float)
+    error = Signal(str)
+
+    def __init__(self, input_path, page, x, y):
+        super().__init__()
+        self.input_path = input_path
+        self.page = page
+        self.x = x
+        self.y = y
+
+    def run(self):
+        try:
+            input_p = Path(self.input_path).resolve()
+
+            cache_dir = Path(tempfile.gettempdir()) / "PDF_Network_Cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+
+            file_stat = input_p.stat()
+            unique_id = f"{input_p.stem}_{file_stat.st_size}_{int(file_stat.st_mtime)}"
+            cached_pdf = cache_dir / f"{unique_id}.pdf"
+
+            if cached_pdf.exists() and cached_pdf.stat().st_size > 0:
+                self.finished.emit(str(cached_pdf), self.input_path, self.page, self.x, self.y)
+                return
+
+            temp_working_dir = Path(tempfile.mkdtemp(dir=cache_dir))
+
+            # KESİN ÇÖZÜM: Orijinal dosyanın kilitlenmesini engellemek için kopya oluştur
+            temp_input_file = temp_working_dir / input_p.name
+            shutil.copy2(str(input_p), str(temp_input_file))
+
+            expected_temp_pdf = temp_working_dir / f"{input_p.stem}.pdf"
+            converted = False
+
+            if sys.platform == "win32" and input_p.suffix.lower() == ".docx":
+                try:
+                    import win32com.client
+                    import pythoncom
+                    pythoncom.CoInitialize()
+                    word = win32com.client.DispatchEx("Word.Application")
+                    word.Visible = False
+
+                    word_doc = word.Documents.Open(str(temp_input_file))
+                    word_doc.SaveAs(str(expected_temp_pdf), FileFormat=17)
+                    word_doc.Close()
+                    word.Quit()
+                    pythoncom.CoUninitialize()
+
+                    if expected_temp_pdf.exists() and expected_temp_pdf.stat().st_size > 0:
+                        converted = True
+                except Exception:
+                    pass
+
+            if not converted:
+                lo_profile = temp_working_dir / "lo_profile"
+                env_arg = f"-env:UserInstallation=file://{lo_profile.as_posix()}"
+
+                # ÇÖZÜM: Calc (Excel) dosyaları için "Fit to Page" parametresi eklendi.
+                pdf_export_filter = "writer_pdf_Export"
+                filter_data = ""
+
+                if input_p.suffix.lower() in [".xlsx", ".xls", ".ods"]:
+                    pdf_export_filter = "calc_pdf_Export"
+                    filter_data = '{"FitWidth":{v:"1",type:"long"},"IsFitToPage":{v:"true",type:"boolean"}}'
+
+                cmd = [
+                    "soffice", env_arg, "--headless",
+                    "--convert-to", f"pdf:{pdf_export_filter}:{filter_data}",
+                    "--outdir", str(temp_working_dir),
+                    str(temp_input_file)
+                ]
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=25)
+
+            # --- AKILLI FİLİGRAN VE ÇÖP TEMİZLEME ALGORİTMASI ---
+            if expected_temp_pdf.exists() and expected_temp_pdf.stat().st_size > 0:
+                try:
+                    cleanup_doc = pymupdf.open(str(expected_temp_pdf))
+                    for p_idx in range(len(cleanup_doc)):
+                        p = cleanup_doc[p_idx]
+
+                        found_watermarks = []
+                        for pattern in ["Sayfa", "Sayfa ", "Page", "Page ", "Page 1", "Sayfa 1", "Sayfa 2"]:
+                            found_watermarks.extend(p.search_for(pattern))
+
+                        for watermark_rect in found_watermarks:
+                            p.add_redact_annot(watermark_rect, fill=(1,1,1))
+
+                        page_width = p.rect.width
+                        page_height = p.rect.height
+
+                        p.add_redact_annot(pymupdf.Rect(0, 0, 20, page_height), fill=(1,1,1))
+                        p.add_redact_annot(pymupdf.Rect(page_width-20, 0, page_width, page_height), fill=(1,1,1))
+                        p.add_redact_annot(pymupdf.Rect(0, 0, page_width, 20), fill=(1,1,1))
+                        p.add_redact_annot(pymupdf.Rect(0, page_height-20, page_width, page_height), fill=(1,1,1))
+
+                        p.apply_redactions()
+
+                    cleanup_doc.save(str(expected_temp_pdf), garbage=4, deflate=True)
+                    cleanup_doc.close()
+                except Exception as clean_err:
+                    print(f"Filigran temizleme hatası (atlandı): {clean_err}")
+
+                shutil.move(str(expected_temp_pdf), str(cached_pdf))
+                self.finished.emit(str(cached_pdf), self.input_path, self.page, self.x, self.y)
+            else:
+                self.error.emit("Dönüştürülen PDF boş veya oluşturulamadı.")
+
+            shutil.rmtree(temp_working_dir, ignore_errors=True)
+
+        except Exception as e:
+            self.error.emit(str(e))
+
 
 class NoteBrowser(QTextBrowser):
     def __init__(self, parent=None):
@@ -46,10 +154,19 @@ class NoteBrowser(QTextBrowser):
             self.main_window.enable_note_editing()
         super().mouseDoubleClickEvent(event)
 
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.db = Database()
+
+        self.thumbnail_pool = QThreadPool.globalInstance()
+        self.thumbnail_pool.setMaxThreadCount(3)
+
+        if "APPIMAGE" in os.environ:
+            PROJE_ANA_DIZINI = Path(os.environ["APPIMAGE"]).parent
+        else:
+            PROJE_ANA_DIZINI = Path(os.path.realpath(__file__)).parent
 
         icon_path = PROJE_ANA_DIZINI / "icon.svg"
         if icon_path.exists():
@@ -134,10 +251,8 @@ class MainWindow(QMainWindow):
         self.load_groups()
 
     def lang_degistir(self, index):
-        if index == 0:
-            set_lang("tr")
-        else:
-            set_lang("en")
+        if index == 0: set_lang("tr")
+        else: set_lang("en")
         self.metinleri_guncelle()
         self.save_settings()
 
@@ -253,26 +368,24 @@ class MainWindow(QMainWindow):
 
         dash_layout.addWidget(self.dash_recent_lbl)
 
-        self.history_list = QListWidget()
-        self.history_list.setAlternatingRowColors(True)
-        self.history_list.setStyleSheet('''
-            QListWidget { font-size: 14px; padding: 5px; background-color: #ffffff; }
-            QListWidget::item { padding: 8px; border-bottom: 1px solid #e0e0e0; }
-            QListWidget::item:alternate { background-color: #f4f6f9; }
-            QListWidget::item:selected { background-color: #d0e6f5; color: black; }
-        ''')
-        self.history_list.itemDoubleClicked.connect(self.open_from_dashboard)
-        self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.history_list.customContextMenuRequested.connect(self.show_dashboard_menu)
-        self.history_list.keyPressEvent = self.history_key_press_event
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("background-color: transparent; border: none;")
 
-        dash_layout.addWidget(self.history_list, 1)
+        self.grid_widget = QWidget()
+        self.grid_widget.setStyleSheet("background-color: transparent;")
+        self.grid_layout = QGridLayout(self.grid_widget)
+        self.grid_layout.setSpacing(15)
+        self.grid_layout.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+        self.scroll_area.setWidget(self.grid_widget)
+        dash_layout.addWidget(self.scroll_area, 1)
 
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.tab_widget.currentChanged.connect(self.on_tab_changed)
-        
+
         self.right_stack.addWidget(self.dashboard_widget)
         self.right_stack.addWidget(self.tab_widget)
         self.right_stack.currentChanged.connect(self.update_dashboard_button)
@@ -294,27 +407,19 @@ class MainWindow(QMainWindow):
     def on_tab_changed(self, index):
         viewer = self.get_current_viewer()
         if viewer:
-            self.current_pdf = viewer.current_file_path
+            self.current_pdf = getattr(viewer, "original_file_path", viewer.current_file_path)
             self.setWindowTitle(f"{t('app_title')} - {Path(self.current_pdf).name}")
             self.update_page_label()
             self.update_zoom_label()
             self.load_pdf_bookmarks()
+            self.btn_zoom_in.setEnabled(True)
+            self.btn_zoom_out.setEnabled(True)
         else:
             self.current_pdf = None
             self.setWindowTitle(t("app_title"))
             self.page_label.setText(t("lbl_page_empty"))
             self.page_edit.clear()
         self.update_dashboard_button()
-
-    def close_tab(self, index):
-        viewer = self.tab_widget.widget(index)
-        if viewer:
-            if viewer.doc: 
-                viewer.doc.close()
-            viewer.deleteLater()
-        self.tab_widget.removeTab(index)
-        if self.tab_widget.count() == 0:
-            self.right_stack.setCurrentIndex(0)
 
     def on_tree_item_clicked(self, item):
         group_id = item.data(0, Qt.UserRole)
@@ -355,50 +460,95 @@ class MainWindow(QMainWindow):
         self.pdf_history = history[:5]
         self.update_dashboard_ui(self.pdf_history)
 
-    def open_in_tab(self, pdf_path, page=0, x=0, y=0):
-        # 1. Zaten acik mi kontrol et
+    def close_tab(self, index):
+        viewer = self.tab_widget.widget(index)
+        if viewer:
+            if hasattr(viewer, "doc") and viewer.doc:
+                viewer.doc.close()
+            viewer.deleteLater()
+        self.tab_widget.removeTab(index)
+        if self.tab_widget.count() == 0:
+            self.right_stack.setCurrentIndex(0)
+
+    def open_in_tab(self, file_path, page=0, x=0, y=0):
         for i in range(self.tab_widget.count()):
             viewer = self.tab_widget.widget(i)
-            if viewer.current_file_path == pdf_path:
+            if getattr(viewer, "original_file_path", viewer.current_file_path) == file_path:
                 self.tab_widget.setCurrentIndex(i)
                 viewer.goto_position(page, x, y)
                 self.right_stack.setCurrentIndex(1)
-                self.add_to_history(pdf_path, page)
+                self.add_to_history(file_path, page)
                 return i
 
-        # 2. Acik degilse yeni sekme ac
+        suffix = Path(file_path).suffix.lower()
+        is_office_doc = suffix in [".docx", ".odt", ".xlsx", ".ods"]
+
+        if is_office_doc:
+            self.convert_progress = QProgressDialog(t("lbl_loading"), None, 0, 0, self)
+            self.convert_progress.setWindowTitle(t("lbl_loading"))
+            self.convert_progress.setWindowModality(Qt.WindowModal)
+            self.convert_progress.show()
+
+            self.office_worker = OfficeConvertWorker(file_path, page, x, y)
+            self.office_worker.finished.connect(self._on_office_converted)
+            self.office_worker.error.connect(self._on_office_error)
+            self.office_worker.start()
+            return -1
+
+        self._load_pdf_into_tab(file_path, file_path, False, page, x, y)
+        return self.tab_widget.currentIndex()
+
+    def _on_office_converted(self, pdf_path, original_path, page, x, y):
+        if hasattr(self, "convert_progress"): self.convert_progress.close()
+        self._load_pdf_into_tab(pdf_path, original_path, True, page, x, y)
+
+    def _on_office_error(self, err_msg):
+        if hasattr(self, "convert_progress"): self.convert_progress.close()
+        QMessageBox.critical(self, t("err_convert_title"), t("err_convert_msg") + f"\n\nSistem Detayı: {err_msg}")
+
+    def _load_pdf_into_tab(self, active_open_path, original_path, is_office_doc, page, x, y):
         new_viewer = PDFViewer()
+        new_viewer.original_file_path = original_path
+        new_viewer.is_office_doc = is_office_doc
+
         new_viewer.zoom_changed.connect(self.update_zoom_label)
-        new_viewer.page_changed.connect(self.update_page_label)
         new_viewer.bookmarkRequested.connect(self.add_bookmark_from_selection)
         new_viewer.highlightRequested.connect(self.create_highlight)
         new_viewer.deleteHighlightRequested.connect(self.delete_highlight)
         new_viewer.exportTableRequested.connect(self.export_table_to_excel)
         new_viewer.addNoteRequested.connect(self.add_page_note)
+        new_viewer.page_changed.connect(self.update_page_label)
 
-        new_viewer.open_pdf(pdf_path)
+        new_viewer.open_pdf(active_open_path)
         new_viewer.goto_position(page, x, y)
 
-        tab_title = Path(pdf_path).name
+        tab_title = Path(original_path).name
         index = self.tab_widget.addTab(new_viewer, tab_title)
         self.tab_widget.setCurrentIndex(index)
         self.right_stack.setCurrentIndex(1)
-
-        self.add_to_history(pdf_path, page)
+        self.add_to_history(original_path, page)
         return index
 
     def open_pdf(self):
         default_dir = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
-        file_filter = t("filter_supported")
-        filename, _ = QFileDialog.getOpenFileName(self, t("btn_open"), default_dir, file_filter)
 
+        file_filter = (
+            "Tüm Desteklenen Belgeler (*.pdf *.xlsx *.ods *.docx *.odt *.epub *.mobi *.fb2 *.cbz *.txt);;"
+            "PDF ve E-Kitaplar (*.pdf *.epub *.mobi *.fb2 *.cbz);;"
+            "Desteklenen Ofis ve PDF Belgeleri (*.pdf *.xlsx *.ods *.docx *.odt);;"
+            "Tüm Dosyalar (*.*)"
+        )
+
+        filename, _ = QFileDialog.getOpenFileName(self, t("btn_open"), default_dir, file_filter)
         if not filename:
             return
+
         self.open_in_tab(filename)
 
     def load_pdf_bookmarks(self):
         pdf_root_name = t("pdf_bookmarks_root")
-        possible_roots = [dil_sozlugu.get("pdf_bookmarks_root") for dil_sozlugu in METINLER.values()]
+        from lang import get_all_translations_for_key
+        possible_roots = get_all_translations_for_key("pdf_bookmarks_root")
 
         for i in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(i)
@@ -407,8 +557,7 @@ class MainWindow(QMainWindow):
                 break
 
         viewer = self.get_current_viewer()
-        if not viewer or not viewer.doc:
-            return
+        if not viewer or not viewer.doc: return
 
         toc = viewer.doc.get_toc()
         self.pdf_root = QTreeWidgetItem([pdf_root_name])
@@ -425,35 +574,24 @@ class MainWindow(QMainWindow):
 
     def zoom_in(self):
         viewer = self.get_current_viewer()
-        if viewer:
-            viewer.zoom_in()
-            self.update_zoom_label()
+        if viewer: viewer.zoom_in(); self.update_zoom_label()
 
     def zoom_out(self):
         viewer = self.get_current_viewer()
-        if viewer:
-            viewer.zoom_out()
-            self.update_zoom_label()
+        if viewer: viewer.zoom_out(); self.update_zoom_label()
 
     def update_zoom_label(self):
         viewer = self.get_current_viewer()
-        if viewer:
-            value = int(viewer.zoom * 100)
-            self.zoom_label.setText(t("lbl_zoom").format(value))
-        else:
-            self.zoom_label.setText("")
+        if viewer: self.zoom_label.setText(t("lbl_zoom").format(int(viewer.zoom * 100)))
+        else: self.zoom_label.setText("")
 
     def next_page(self):
         viewer = self.get_current_viewer()
-        if viewer:
-            viewer.next_page()
-            self.update_page_label()
+        if viewer: viewer.next_page(); self.update_page_label()
 
     def previous_page(self):
         viewer = self.get_current_viewer()
-        if viewer:
-            viewer.previous_page()
-            self.update_page_label()
+        if viewer: viewer.previous_page(); self.update_page_label()
 
     def update_page_label(self):
         viewer = self.get_current_viewer()
@@ -461,10 +599,7 @@ class MainWindow(QMainWindow):
             self.page_label.setText(t("lbl_page_empty"))
             self.page_edit.clear()
             return
-            
-        if self.sender() and isinstance(self.sender(), PDFViewer) and self.sender() != viewer:
-            return
-
+        if self.sender() and isinstance(self.sender(), PDFViewer) and self.sender() != viewer: return
         current = viewer.current_page + 1
         total = len(viewer.doc)
         self.page_label.setText(t("lbl_page").format(current, total))
@@ -472,28 +607,20 @@ class MainWindow(QMainWindow):
 
     def add_group(self):
         name, ok = QInputDialog.getText(self, t("dlg_new_group"), t("dlg_group_name"))
-        if not ok or not name.strip():
-            return
-        self.db.add_group(name.strip())
-        self.load_groups()
+        if ok and name.strip(): self.db.add_group(name.strip()); self.load_groups()
 
     def load_groups(self):
         self.tree.clear()
         groups = self.db.get_groups()
         nodes = {}
-
         for gid, name, parent_id in groups:
             item = QTreeWidgetItem([name])
             item.setData(0, Qt.UserRole, gid)
             nodes[gid] = item
-
         for gid, name, parent_id in groups:
             item = nodes[gid]
-            if parent_id and parent_id in nodes:
-                nodes[parent_id].addChild(item)
-            else:
-                self.tree.addTopLevelItem(item)
-
+            if parent_id and parent_id in nodes: nodes[parent_id].addChild(item)
+            else: self.tree.addTopLevelItem(item)
         bookmarks = self.db.get_bookmarks()
         for bookmark in bookmarks:
             bid, title, pdf_path, page, group_id = bookmark[0], bookmark[1], bookmark[2], bookmark[3], bookmark[4]
@@ -501,255 +628,111 @@ class MainWindow(QMainWindow):
                 bookmark_item = QTreeWidgetItem([title])
                 bookmark_item.setData(0, Qt.UserRole + 1, bid)
                 nodes[group_id].addChild(bookmark_item)
-                
         self.load_pdf_bookmarks()
 
     def toggle_bookmarks(self):
         sizes = self.splitter.sizes()
-        if sizes[0] > 0:
-            self._last_left_width = sizes[0]
-            sizes[0] = 0
-        else:
-            sizes[0] = getattr(self, "_last_left_width", 250)
+        if sizes[0] > 0: self._last_left_width = sizes[0]; sizes[0] = 0
+        else: sizes[0] = getattr(self, "_last_left_width", 250)
         self.splitter.setSizes(sizes)
 
     def save_settings(self):
         sizes = self.splitter.sizes()
         is_visible = sizes[0] > 0
-        if not is_visible and hasattr(self, "_last_left_width"):
-            sizes[0] = self._last_left_width
-
+        if not is_visible and hasattr(self, "_last_left_width"): sizes[0] = self._last_left_width
         data = {
-            "window_width": self.width(),
-            "window_height": self.height(),
-            "splitter_sizes": sizes,
-            "bookmarks_visible": is_visible,
+            "window_width": self.width(), "window_height": self.height(),
+            "splitter_sizes": sizes, "bookmarks_visible": is_visible,
             "pdf_history": getattr(self, "pdf_history", []),
             "last_active_index": self.right_stack.currentIndex(),
             "language": "tr" if self.combo_lang.currentIndex() == 0 else "en"
         }
-        self.settings_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.settings_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
+        with open(self.settings_file, "w", encoding="utf-8") as f: json.dump(data, f, indent=4)
 
     def load_settings(self):
-        if not self.settings_file.exists():
-            self.update_dashboard_ui([])
-            return
+        if not self.settings_file.exists(): self.update_dashboard_ui([]); return
         try:
-            with open(self.settings_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            kayitli_dil = data.get("language", "tr")
+            with open(self.settings_file, "r", encoding="utf-8") as f: data = json.load(f)
+            set_lang(data.get("language", "tr"))
             self.combo_lang.blockSignals(True)
-            if kayitli_dil == "en":
-                self.combo_lang.setCurrentIndex(1)
-                set_lang("en")
-            else:
-                self.combo_lang.setCurrentIndex(0)
-                set_lang("tr")
+            self.combo_lang.setCurrentIndex(0 if data.get("language") == "tr" else 1)
             self.combo_lang.blockSignals(False)
-
             self.resize(data.get("window_width", 1400), data.get("window_height", 900))
-            splitter_sizes = data.get("splitter_sizes", [250, 900, 300])
-            is_visible = data.get("bookmarks_visible", True)
-
-            if not is_visible:
-                self._last_left_width = splitter_sizes[0]
-                splitter_sizes[0] = 0
-            else:
-                self._last_left_width = splitter_sizes[0]
-
-            self.splitter.setSizes(splitter_sizes)
             self.pdf_history = data.get("pdf_history", [])
             self.update_dashboard_ui(self.pdf_history)
-            self.right_stack.setCurrentIndex(0)
-
-        except Exception as e:
-            print("Settings error:", e)
-            self.update_dashboard_ui([])
+        except: self.update_dashboard_ui([])
 
     def update_dashboard_ui(self, history):
-        self.history_list.clear()
-        try:
-            total_bookmarks = self.db.get_bookmark_count()
-            total_groups = self.db.get_group_count()
-            self.stats_label.setText(t("dash_stats").format(total_bookmarks, total_groups))
-        except Exception:
-            self.stats_label.setText(t("dash_stats_error"))
-
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+        try: self.stats_label.setText(t("dash_stats").format(self.db.get_bookmark_count(), self.db.get_group_count()))
+        except: pass
+        self.thumbnail_pool.clear()
         if not history:
-            item = QListWidgetItem(t("dash_empty"))
-            item.setFlags(Qt.NoItemFlags)
-            self.history_list.addItem(item)
+            lbl = QLabel(t("dash_empty"))
+            lbl.setStyleSheet("color: #7f8c8d; font-style: italic;")
+            self.grid_layout.addWidget(lbl, 0, 0)
             return
+        for idx, d in enumerate(history):
+            if not isinstance(d, dict): continue
+            card = RecentFileCard(d)
+            card.clicked.connect(self.open_from_dashboard_card)
+            card.delete_requested.connect(self.delete_from_dashboard_card)
+            self.grid_layout.addWidget(card, idx // 4, idx % 4)
+            self.thumbnail_pool.start(ThumbnailWorker(d.get("path", ""), card))
 
-        for data in history:
-            if not isinstance(data, dict):
-                continue
-            path = data.get("path", "")
-            page = data.get("page", 0) + 1
-            date = data.get("date", "-")
-            file_name = Path(path).name
+    def _on_pencere_thumbnail_ready(self, samples, width, height, stride, status, card_ref):
+        if card_ref and status == "success" and samples:
+            img = QImage(samples, width, height, stride, QImage.Format_RGB888)
+            card_ref.set_pixmap(QPixmap.fromImage(img).scaled(256, 130, Qt.KeepAspectRatio, Qt.SmoothTransformation), "success")
 
-            display_text = t("dash_item").format(file_name, path, page, date)
-            list_item = QListWidgetItem(display_text)
-            list_item.setData(Qt.UserRole, data)
-            self.history_list.addItem(list_item)
+    def open_from_dashboard_card(self, d):
+        if d and Path(d.get("path", "")).exists(): self.open_in_tab(d["path"], d.get("page", 0))
 
-    def open_from_dashboard(self, item):
-        data = item.data(Qt.UserRole)
-        if not data:
-            return
+    def delete_from_dashboard_card(self, d):
+        self.pdf_history = [i for i in self.pdf_history if i.get("path") != d.get("path")]
+        self.update_dashboard_ui(self.pdf_history); self.save_settings()
 
-        pdf_path = data.get("path")
-        page = data.get("page", 0)
-
-        if not pdf_path or not Path(pdf_path).exists():
-            QMessageBox.warning(self, t("msg_error"), t("err_file_missing"))
-            return
-
-        self.open_in_tab(pdf_path, page)
-
-    def show_dashboard_menu(self, pos):
-        item = self.history_list.itemAt(pos)
-        if not item or item.flags() & Qt.NoItemFlags:
-            return
-
-        menu = QMenu(self)
-        delete_action = menu.addAction(t("dash_menu_delete"))
-
-        action = menu.exec(self.history_list.mapToGlobal(pos))
-        if action == delete_action:
-            self.delete_from_dashboard(item)
-
-    def history_key_press_event(self, event):
-        if event.key() == Qt.Key_Delete:
-            selected_items = self.history_list.selectedItems()
-            if selected_items:
-                self.delete_from_dashboard(selected_items[0])
-        else:
-            QListWidget.keyPressEvent(self.history_list, event)
-
-    def delete_from_dashboard(self, item):
-        if not item or item.flags() & Qt.NoItemFlags:
-            return
-
-        data = item.data(Qt.UserRole)
-        if not data:
-            return
-
-        target_path = data.get("path") if isinstance(data, dict) else data
-        self.pdf_history = [
-            i for i in getattr(self, "pdf_history", [])
-            if (i.get("path") if isinstance(i, dict) else i) != target_path
-        ]
-
-        row = self.history_list.row(item)
-        self.history_list.takeItem(row)
-
-        if self.history_list.count() == 0:
-            empty_item = QListWidgetItem(t("dash_empty"))
-            empty_item.setFlags(Qt.NoItemFlags)
-            self.history_list.addItem(empty_item)
-
-        self.save_settings()
-
-    def closeEvent(self, event):
-        self.save_settings()
-        super().closeEvent(event)
+    def closeEvent(self, event): self.save_settings(); super().closeEvent(event)
 
     def search_in_pdf(self):
-        text = self.pdf_search.text().strip()
-        if not text: return
-        viewer = self.get_current_viewer()
-        if not viewer: return
-
-        pages = viewer.search_text(text)
-        grouped = {}
-
-        for page, rect in pages:
-            if page not in grouped:
-                grouped[page] = {"count": 0, "rects": []}
-            grouped[page]["count"] += 1
-            grouped[page]["rects"].append((page, rect))
-
+        text_val = self.pdf_search.text().strip()
+        if not text_val or not self.get_current_viewer(): return
+        pages = self.get_current_viewer().search_text(text_val)
         self.search_results.clear()
-        total_matches = len(pages)
-        self.search_results.addItem(t("search_matches").format(total_matches))
-
-        for page in sorted(grouped):
-            count = grouped[page]["count"]
-            rects = grouped[page]["rects"]
-            item = QListWidgetItem(t("search_page_result").format(page + 1, count))
-            item.setData(Qt.UserRole, (page, rects))
-            self.search_results.addItem(item)
+        self.search_results.addItem(f"Toplam Eşleşme: {len(pages)}")
+        for p, r in pages:
+            itm = QListWidgetItem(f"Sayfa {p + 1}")
+            itm.setData(Qt.UserRole, (p, [r]))
+            self.search_results.addItem(itm)
 
     def goto_search_result(self, item):
-        if item.data(Qt.UserRole) is None: return
-        page, rects = item.data(Qt.UserRole)
-        if not isinstance(rects, list) or len(rects) == 0: return
-
-        viewer = self.get_current_viewer()
-        if not viewer: return
-
-        viewer.goto_page(page)
-        viewer.set_highlight(rects)
-
-        first_item = rects[0]
-        if isinstance(first_item, tuple) and len(first_item) == 2:
-            viewer.active_search_rect = first_item[1]
-        else:
-            viewer.active_search_rect = first_item
-
-        viewer.render_page()
-        self.update_page_label()
+        v = self.get_current_viewer()
+        if v and item.data(Qt.UserRole):
+            p, r = item.data(Qt.UserRole); v.goto_page(p); v.set_highlight(r); v.render_page()
 
     def filter_tree(self, text):
-        text = text.lower().strip()
-        for i in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(i)
-            self.filter_item(item, text)
+        for i in range(self.tree.topLevelItemCount()): self.filter_item(self.tree.topLevelItem(i), text.lower().strip())
 
     def filter_item(self, item, text):
-        visible = text in item.text(0).lower()
-        child_visible = False
-        for i in range(item.childCount()):
-            if self.filter_item(item.child(i), text):
-                child_visible = True
-        show = visible or child_visible or text == ""
-        item.setHidden(not show)
-        if child_visible and text != "":
-            item.setExpanded(True)
-        return show
+        vis = text in item.text(0).lower()
+        c_vis = any(self.filter_item(item.child(i), text) for i in range(item.childCount()))
+        item.setHidden(not (vis or c_vis or text == ""))
+        return vis or c_vis
 
     def show_tree_menu(self, pos):
         item = self.tree.itemAt(pos)
-        menu = QMenu()
-        add_bookmark = menu.addAction(t("menu_add_bookmark"))
-        rename_bookmark = menu.addAction(t("menu_rename_bookmark"))
-        delete_bookmark = menu.addAction(t("menu_del_bookmark"))
-        add_subgroup = menu.addAction(t("menu_add_subgroup"))
-        rename_group = menu.addAction(t("menu_rename_group"))
-        delete_group = menu.addAction(t("menu_del_group"))
-        add_cross_link = menu.addAction(t("menu_add_link"))
+        m = QMenu()
+        a_bm = m.addAction(t("menu_add_bookmark"))
+        r_bm = m.addAction(t("menu_rename_bookmark"))
+        d_bm = m.addAction(t("menu_del_bookmark"))
+        action = m.exec(self.tree.mapToGlobal(pos))
+        if action == a_bm: self.add_bookmark(item)
+        elif action == r_bm: self.rename_bookmark(item)
+        elif action == d_bm: self.delete_bookmark(item)
 
-        action = menu.exec(self.tree.mapToGlobal(pos))
-        if action == add_bookmark:
-            self.add_bookmark(item)
-        elif action == rename_bookmark:
-            self.rename_bookmark(item)
-        elif action == delete_bookmark:
-            self.delete_bookmark(item)
-        elif action == add_subgroup:
-            self.add_subgroup(item)
-        elif action == rename_group:
-            self.rename_group(item)
-        elif action == delete_group:
-            self.delete_group_recursive(item)
-        elif action == add_cross_link:
-            self.add_cross_pdf_link(item)
-
+    # ---------------- EKSİK OLAN VE GERİ GETİRİLEN FONKSİYONLAR ----------------
     def add_bookmark(self, item):
         viewer = self.get_current_viewer()
         if not viewer or not item: return
@@ -758,7 +741,10 @@ class MainWindow(QMainWindow):
         title, ok = QInputDialog.getText(self, t("dlg_new_bookmark"), t("dlg_bookmark_name"))
         if not ok or not title.strip():
             return
-        self.db.add_bookmark(title.strip(), viewer.current_file_path, current_page, group_id)
+
+        kaydedilecek_yol = getattr(viewer, "original_file_path", viewer.current_file_path)
+
+        self.db.add_bookmark(title.strip(), kaydedilecek_yol, current_page, group_id)
         self.load_groups()
         viewer.goto_page(current_page)
         self.update_page_label()
@@ -782,7 +768,7 @@ class MainWindow(QMainWindow):
     def open_bookmark(self, item):
         if QApplication.mouseButtons() == Qt.RightButton:
             return
-        
+
         pdf_page = item.data(0, Qt.UserRole + 100)
         if pdf_page is not None:
             viewer = self.get_current_viewer()
@@ -791,7 +777,7 @@ class MainWindow(QMainWindow):
                 self.update_page_label()
                 self.right_stack.setCurrentIndex(1)
             return
-            
+
         bookmark_id = item.data(0, Qt.UserRole + 1)
         if not bookmark_id:
             self.active_bookmark_id = None
@@ -848,6 +834,28 @@ class MainWindow(QMainWindow):
         self.note_edit.setHtml(html_note.replace("\n", "<br>"))
         self.note_edit.setEnabled(True)
         self.btn_save_note.setEnabled(True)
+    def rename_group_action(self, item):
+        if not item: return
+        group_id = item.data(0, Qt.UserRole)
+        if group_id is None: return
+        name, ok = QInputDialog.getText(self, t("dlg_rename_group"), t("dlg_group_new_name"), text=item.text(0))
+        if ok and name.strip():
+            self.db.rename_group(group_id, name.strip())
+            self.load_groups()
+
+    def delete_group_action(self, item):
+        if not item: return
+        group_id = item.data(0, Qt.UserRole)
+        if group_id is None: return
+        msg_text = t("msg_delete_group_confirm").format(item.text(0))
+        reply = QMessageBox.question(self, t("msg_warning"), msg_text, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            bookmarks = self.db.get_bookmarks()
+            for b in bookmarks:
+                if len(b) > 4 and b[4] == group_id:
+                    self.db.delete_bookmark(b[0])
+            self.db.delete_group(group_id)
+            self.load_groups()
 
     def enable_note_editing(self):
         if not self.active_bookmark_id or not self.note_edit.isReadOnly(): return
@@ -925,32 +933,30 @@ class MainWindow(QMainWindow):
         if self.selected_group_id is None:
             QMessageBox.warning(self, t("msg_warning"), t("warn_select_group"))
             return
-        self.db.add_bookmark(text, viewer.current_file_path, page, self.selected_group_id, x, y)
+        kaydedilecek_yol = getattr(viewer, "original_file_path", viewer.current_file_path)
+        self.db.add_bookmark(text, kaydedilecek_yol, page, self.selected_group_id, x, y)
         self.load_groups()
         viewer.goto_page(page)
         self.update_page_label()
 
     def _save_and_reload_pdf(self, viewer):
-        """
-        PDF dosyasını durumuna göre en performanslı şekilde kaydeder.
-        Onarılmış (bozuk) PDF ise tam inşa yapar, sağlamsa çok hızlı artımlı (saveIncr) kaydeder.
-        """
         try:
             if getattr(viewer.doc, "is_repaired", False):
                 temp_path = viewer.current_file_path + ".tmp.pdf"
-                # garbage=4 ve deflate=True ile PDF'in yapısını tüm çöplerden temizle ve sıkıştır
                 viewer.doc.save(temp_path, garbage=4, deflate=True)
                 viewer.doc.close()
-
                 import os
                 os.replace(temp_path, viewer.current_file_path)
                 viewer.doc = pymupdf.open(viewer.current_file_path)
             else:
                 viewer.doc.saveIncr()
 
+            if hasattr(viewer.doc, "reload"):
+                viewer.doc.reload()
+
             viewer.render_page()
         except Exception as e:
-            QMessageBox.warning(self, t("msg_error"), f"Kaydetme işlemi başarısız: {e}")
+            QMessageBox.warning(self, t("msg_error"), t("err_save_failed").format(e))
 
     def create_highlight(self, page_no, x0, y0, x1, y1):
         viewer = self.sender()
@@ -958,18 +964,11 @@ class MainWindow(QMainWindow):
         try:
             page = viewer.doc[page_no]
             rect = pymupdf.Rect(x0, y0, x1, y1)
-
-            # Tam ve keskin bir dikdörtgen (Square Annotation) ekliyoruz
             annot = page.add_rect_annot(rect)
-
-            # İçini ve dışını sarı yapıp şeffaflık (opacity) uyguluyoruz
-            annot.set_colors(stroke=(1, 1, 0), fill=(1, 1, 0)) # Sarı renk
-            annot.set_opacity(0.4) # Highlight hissi vermek için %40 saydam
+            annot.set_colors(stroke=(1, 1, 0), fill=(1, 1, 0))
+            annot.set_opacity(0.4)
             annot.update()
-
-            # Tekrarlayan kodu yardımcı fonksiyona yolladık
             self._save_and_reload_pdf(viewer)
-
         except Exception as e:
             QMessageBox.warning(self, t("msg_error"), t("err_highlight_readonly").format(e))
 
@@ -982,93 +981,69 @@ class MainWindow(QMainWindow):
             annot = page.first_annot
             while annot:
                 next_annot = annot.next
-                # Tıkladığımız nokta (x, y) notun/vurgunun sınırları içindeyse sil!
                 if annot.rect.contains(point):
                     page.delete_annot(annot)
-
-                    # Tekrarlayan ve hatalı olan iki defa temp_path atama blokları silindi
                     self._save_and_reload_pdf(viewer)
                     return
                 annot = next_annot
         except Exception as e:
-            QMessageBox.warning(self, "Hata", f"Silme işlemi başarısız: {e}")
+            QMessageBox.warning(self, t("msg_error"), t("err_delete_failed").format(e))
 
     def add_page_note(self, page_no, x, y):
         viewer = self.sender()
         if not viewer or not viewer.doc: return
 
-        # Kullanıcıdan not metnini al
-        text, ok = QInputDialog.getMultiLineText(self, "Sayfaya Not Ekle", "Sayfa üzerine eklenecek notunuzu yazın:")
+        text, ok = QInputDialog.getMultiLineText(self, t("dlg_add_note_title"), t("dlg_add_note_msg"))
         if not ok or not text.strip(): return
 
         try:
             page = viewer.doc[page_no]
-
-            # DİNAMİK BOYUT HESAPLAMA
             lines = text.strip().split('\n')
             max_len = max([len(line) for line in lines] + [1])
             total_lines = sum([max(1, len(line) // 35) for line in lines])
-
-            # Genişliği en uzun satıra göre, yüksekliği ise satır sayısına göre otomatik belirle
             width = min(250, max(100, max_len * 7))
             height = max(40, total_lines * 16 + 15)
-
             rect = pymupdf.Rect(x, y, x + width, y + height)
             rect.normalize()
-
-            # Serbest metin notunu ekle
             annot = page.add_freetext_annot(
-                rect,
-                text.strip(),
-                fontsize=11,
-                fontname="helv",
-                text_color=(1, 0, 0),
-                fill_color=(1, 1, 0.8)
+                rect, text.strip(), fontsize=11, fontname="helv",
+                text_color=(1, 0, 0), fill_color=(1, 1, 0.8)
             )
             annot.set_border(width=1)
             annot.update()
-
-            # Tekrarlayan kodu yardımcı fonksiyona yolladık
             self._save_and_reload_pdf(viewer)
-
         except Exception as e:
-            QMessageBox.warning(self, "Hata", f"Not eklenirken hata oluştu: {e}")
+            QMessageBox.warning(self, t("msg_error"), t("err_add_note_failed").format(e))
 
     def print_pdf(self):
         viewer = self.get_current_viewer()
         if not viewer or not viewer.doc: return
-            
         printer = QPrinter(QPrinter.HighResolution)
         dialog = QPrintDialog(printer, self)
         dialog.setWindowTitle(t("print_title"))
-        
         if dialog.exec() == QPrintDialog.Accepted:
-            try:
-                painter = QPainter(printer)
-                doc = viewer.doc
-                
-                from_page = printer.fromPage() - 1
-                to_page = printer.toPage() - 1
-                
-                if from_page < 0: from_page = 0
-                if to_page < 0 or to_page >= len(doc): to_page = len(doc) - 1
-                
-                for i in range(from_page, to_page + 1):
-                    if i > from_page:
-                        printer.newPage()
-                    page = doc[i]
-                    matrix = pymupdf.Matrix(3, 3) 
-                    pix = page.get_pixmap(matrix=matrix)
-                    image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
-                    
-                    rect = printer.pageRect(QPrinter.DevicePixel)
-                    painter.drawImage(rect, image)
-                painter.end()
-                
-                QMessageBox.information(self, t("print_title"), t("print_all_success").format(printer.printerName()))
-            except Exception as e:
-                QMessageBox.warning(self, t("print_err"), str(e))
+            from_page = printer.fromPage() - 1
+            to_page = printer.toPage() - 1
+            if from_page < 0: from_page = 0
+            if to_page < 0 or to_page >= len(viewer.doc): to_page = len(viewer.doc) - 1
+            self.progress_dialog = QProgressDialog(t("prog_print_wait"), None, 0, 0, self)
+            self.progress_dialog.setWindowTitle(t("print_title"))
+            self.progress_dialog.setWindowModality(Qt.WindowModal)
+            self.progress_dialog.show()
+            self.print_worker = PDFPrintWorker(viewer.current_file_path, printer, from_page, to_page)
+            self.print_worker.finished.connect(self._on_print_finished)
+            self.print_worker.error.connect(self._on_print_error)
+            self.print_worker.start()
 
+    def _on_print_finished(self, printer_name):
+        if hasattr(self, "progress_dialog"): self.progress_dialog.close()
+        QMessageBox.information(self, t("print_title"), t("print_all_success").format(printer_name))
+
+    def _on_print_error(self, err_msg):
+        if hasattr(self, "progress_dialog"): self.progress_dialog.close()
+        QMessageBox.warning(self, t("print_err"), err_msg)
+
+# ---- BURADAN İTİBAREN AŞAĞIDAKİ BLOĞU EKLİYORUZ ----
     def goto_page(self):
         viewer = self.get_current_viewer()
         if not viewer or not viewer.doc: return
@@ -1079,19 +1054,18 @@ class MainWindow(QMainWindow):
                 viewer.render_page()
         except ValueError: pass
         finally: self.update_page_label()
+    # ----------------------------------------------------
 
     def export_bookmarks_to_markdown(self):
         viewer = self.get_current_viewer()
         if not viewer:
             QMessageBox.warning(self, t("msg_warning"), t("export_warn_open"))
             return
-        
-        cpdf = viewer.current_file_path
+        cpdf = getattr(viewer, "original_file_path", viewer.current_file_path)
         file_name = Path(cpdf).stem
         default_save = PROJE_ANA_DIZINI / f"{file_name}_Calisma_Notlari.md"
         save_filename, _ = QFileDialog.getSaveFileName(self, t("export_save_title"), str(default_save), "Markdown Files (*.md)")
         if not save_filename: return
-
         try:
             bookmarks = self.db.get_bookmarks()
             current_bookmarks = [b for b in bookmarks if b[2] == cpdf]
@@ -1100,13 +1074,11 @@ class MainWindow(QMainWindow):
                 return
             groups = {g[0]: g[1] for g in self.db.get_groups()}
             current_bookmarks.sort(key=lambda x: x[3])
-
             md = t("export_md_title")
             md += t("export_md_doc").format(Path(cpdf).name)
             md += t("export_md_path").format(cpdf)
             md += t("export_md_date").format(datetime.datetime.now().strftime('%Y-%m-%d %H:%M'))
             md += t("export_md_header")
-
             for bookmark in current_bookmarks:
                 title, page, group_id = bookmark[1], bookmark[3], bookmark[4]
                 group_name = groups.get(group_id, t("export_general"))
@@ -1120,7 +1092,6 @@ class MainWindow(QMainWindow):
                 else:
                     md += t("export_md_no_note")
                 md += "\n"
-
             with open(save_filename, "w", encoding="utf-8") as f:
                 f.write(md)
             QMessageBox.information(self, t("msg_success"), t("export_success").format(Path(save_filename).name))
@@ -1135,61 +1106,39 @@ class MainWindow(QMainWindow):
         except ImportError:
             QMessageBox.warning(self, t("exc_lib_err"), t("exc_lib_msg"))
             return
-        try:
-            page = viewer.doc[page_no]
-            rect = pymupdf.Rect(x0, y0, x1, y1)
-            tables = page.find_tables(clip=rect)
+        docs_dir = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+        default_save = str(Path(docs_dir) / f"{Path(viewer.current_file_path).stem}_Tablo_Sayfa{page_no + 1}.xlsx")
+        save_filename, _ = QFileDialog.getSaveFileName(self, t("exc_save_title"), default_save, "Excel Files (*.xlsx)")
+        if not save_filename: return
+        self.table_progress = QProgressDialog(t("prog_table_wait"), None, 0, 0, self)
+        self.table_progress.setWindowTitle(t("exc_save_title"))
+        self.table_progress.setWindowModality(Qt.WindowModal)
+        self.table_progress.show()
+        self.table_worker = TableExportWorker(viewer.current_file_path, page_no, x0, y0, x1, y1, save_filename)
+        self.table_worker.finished.connect(self._on_table_finished)
+        self.table_worker.error.connect(self._on_table_error)
+        self.table_worker.no_table.connect(self._on_table_missing)
+        self.table_worker.start()
 
-            if not tables or not tables.tables:
-                QMessageBox.warning(self, t("exc_notable_title"), t("exc_notable_msg"))
-                return
-            data = tables.tables[0].extract()
-            if not data:
-                QMessageBox.warning(self, t("exc_empty_title"), t("exc_empty_msg"))
-                return
+    def _on_table_finished(self, save_filename):
+        if hasattr(self, "table_progress"): self.table_progress.close()
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(t("msg_success"))
+        msg_box.setText(t("exc_success_msg").format(Path(save_filename).name))
+        msg_box.setIcon(QMessageBox.Information)
+        btn_open = msg_box.addButton(t("exc_btn_open"), QMessageBox.ActionRole)
+        msg_box.addButton(t("exc_btn_ok"), QMessageBox.AcceptRole)
+        msg_box.exec()
+        if msg_box.clickedButton() == btn_open:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(save_filename))
 
-            df = pd.DataFrame(data).fillna('').astype(str).replace(['NaN', 'None'], '', regex=True)
-            cleaned_rows = df.apply(lambda row: [str(val).replace('\n', ' ').strip() for val in row if str(val).strip() != ''], axis=1).tolist()
-            if not cleaned_rows: return
-            max_cols = max(len(row) for row in cleaned_rows if row)
-            final_data = []
-            for i, row in enumerate(cleaned_rows):
-                if not row: final_data.append([""] * max_cols); continue
-                if len(row) < max_cols:
-                    if i == 0: row = [""] * (max_cols - len(row)) + row
-                    else: row = row + [""] * (max_cols - len(row))
-                final_data.append(row)
+    def _on_table_error(self, err_msg):
+        if hasattr(self, "table_progress"): self.table_progress.close()
+        QMessageBox.warning(self, t("msg_error"), t("exc_err").format(err_msg))
 
-            df_clean = pd.DataFrame(final_data)
-            
-            docs_dir = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
-            default_save = str(Path(docs_dir) / f"{Path(viewer.current_file_path).stem}_Tablo_Sayfa{page_no + 1}.xlsx")
-            save_filename, _ = QFileDialog.getSaveFileName(self, t("exc_save_title"), default_save, "Excel Files (*.xlsx)")
-
-            if save_filename:
-                df_clean.to_excel(save_filename, index=False, header=False)
-                try:
-                    from openpyxl import load_workbook
-                    from openpyxl.styles import Font
-                    wb = load_workbook(save_filename)
-                    ws = wb.active
-                    serif_font = Font(name="Times New Roman", size=11)
-                    for row in ws.iter_rows():
-                        for cell in row: cell.font = serif_font
-                    wb.save(save_filename)
-                except Exception: pass
-
-                msg_box = QMessageBox(self)
-                msg_box.setWindowTitle(t("msg_success"))
-                msg_box.setText(t("exc_success_msg").format(Path(save_filename).name))
-                msg_box.setIcon(QMessageBox.Information)
-                btn_open = msg_box.addButton(t("exc_btn_open"), QMessageBox.ActionRole)
-                msg_box.addButton(t("exc_btn_ok"), QMessageBox.AcceptRole)
-                msg_box.exec()
-                if msg_box.clickedButton() == btn_open:
-                    QDesktopServices.openUrl(QUrl.fromLocalFile(save_filename))
-        except Exception as e:
-            QMessageBox.warning(self, t("msg_error"), t("exc_err").format(e))
+    def _on_table_missing(self):
+        if hasattr(self, "table_progress"): self.table_progress.close()
+        QMessageBox.warning(self, t("exc_notable_title"), t("exc_notable_msg"))
 
     def add_cross_pdf_link(self, item):
         bid = item.data(0, Qt.UserRole + 1)
@@ -1205,7 +1154,6 @@ class MainWindow(QMainWindow):
             if not filename: return
             final_file_name = Path(filename).name
             self.add_to_history(filename, 0)
-
         target_page, ok2 = QInputDialog.getInt(self, t("link_wiz_title"), t("link_wiz_q2").format(final_file_name), 1, 1, 9999, 1)
         if not ok2: return
         try:
@@ -1222,26 +1170,24 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, t("msg_error"), str(e))
 
 if __name__ == "__main__":
-    from PySide6.QtGui import QFontDatabase, QFont
-
     app = QApplication(sys.argv)
+
+    # WAYLAND VE KDE 6 İÇİN SİHRİ GERÇEKLEŞTİREN İKİ KRİTİK MÜHÜR:
+    # Görev çubuğunun icon.svg dosyasını yakalamasını sağlar.
     app.setApplicationName("PDF_Network")
     app.setDesktopFileName("PDF_Network")
 
-    font_path = PROJE_ANA_DIZINI / "font.ttf"
-    if font_path.exists():
-        font_id = QFontDatabase.addApplicationFont(str(font_path))
-        if font_id != -1:
-            font_families = QFontDatabase.applicationFontFamilies(font_id)
-            if font_families:
-                custom_font = QFont(font_families[0], 10)
-                app.setFont(custom_font)
-    
+    if "APPIMAGE" in os.environ:
+        PROJE_ANA_DIZINI = Path(os.environ["APPIMAGE"]).parent
+    else:
+        PROJE_ANA_DIZINI = Path(os.path.realpath(__file__)).parent
+
     window = MainWindow()
-    if len(sys.argv) > 1:
-        initial_pdf = sys.argv[1]
-        if Path(initial_pdf).exists():
-            window.open_in_tab(initial_pdf)
+
+    # Eğer terminalden parametre olarak bir dosya yolu gönderildiyse otomatik aç
+    if len(sys.argv) > 1 and Path(sys.argv[1]).exists():
+        window.open_in_tab(sys.argv[1])
 
     window.show()
     sys.exit(app.exec())
+

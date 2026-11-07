@@ -17,9 +17,11 @@ DB_PATH = DB_DIR / "data" / "bookmarks.db"
 class Database:
     def __init__(self):
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(DB_PATH)
+        # Çoklu thread erişimlerinde kilitlenmeyi önlemek için parametre eklendi
+        self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         self.create_tables()
         self.check_and_update_schema()
+
 
     def create_tables(self):
         self.conn.execute("""

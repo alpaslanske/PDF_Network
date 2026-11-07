@@ -97,17 +97,25 @@ class PDFViewer(QScrollArea):
         if self.doc:
             self.doc.close()
         self.current_file_path = pdf_path
-        self.doc = pymupdf.open(pdf_path)
-        self.current_page = 0
-        self.highlight_rects = []
-        self.render_page()
+        try:
+            self.doc = pymupdf.open(pdf_path)
+            self.current_page = 0
+            self.highlight_rects = []
+            self.render_page()
+        except Exception:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, t("err_open_title"), t("err_open_msg"))
+            self.doc = None
 
     def render_page(self):
         if not self.doc: return
 
         page = self.doc[self.current_page]
+
+        # Manjaro KDE 6 ve High-DPI ekranlarda netliği korumak için
+        # zoom değerine göre dinamik matris oluşturuyoruz (Yapay bölmeleri kaldırıyoruz)
         matrix = pymupdf.Matrix(self.zoom, self.zoom)
-        pix = page.get_pixmap(matrix=matrix)
+        pix = page.get_pixmap(matrix=matrix, annots=True)
 
         image = QImage(
             pix.samples,
@@ -117,8 +125,23 @@ class PDFViewer(QScrollArea):
             QImage.Format_RGB888,
         )
 
-        painter = QPainter(image)
+        qpixmap = QPixmap.fromImage(image)
 
+        # ARTIK RESMİ KÖRÜ KÖRÜNE /2.0 DİYEREK KÜÇÜLTMÜYORUZ!
+        # LibreOffice'in ürettiği orijinal çözünürlük neyse ekrana tam o netlikte basıyoruz.
+        target_width = pix.width
+        target_height = pix.height
+
+        scaled_pixmap = qpixmap.scaled(
+            target_width,
+            target_height,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation  # Pürüzsüz görsel filtre
+        )
+
+        painter = QPainter(scaled_pixmap)
+
+        # Vurgulamalar (Highlights) ve Arama Kutuları Çizimi
         if self.highlight_rects:
             for page_no, rect in self.highlight_rects:
                 if page_no != self.current_page:
@@ -155,9 +178,12 @@ class PDFViewer(QScrollArea):
             painter.drawRect(rect)
 
         painter.end()
-        self.image_label.setPixmap(QPixmap.fromImage(image))
-        self.image_label.resize(pix.width, pix.height)
+
+        # Label boyutunu resme göre tam büyüterek ScrollArea'nın kaydırma çubuklarını tetikliyoruz
+        self.image_label.setPixmap(scaled_pixmap)
+        self.image_label.resize(target_width, target_height)
         pix = None
+
 
     def set_highlight(self, rects):
         self.highlight_rects = rects
@@ -591,13 +617,13 @@ class PDFViewer(QScrollArea):
         delete_highlight_action = menu.addAction(t("view_del_highlight"))
         export_table_action = menu.addAction(t("view_export_excel"))
 
-        # YENİ: Sağ tık menüsüne not ekleme butonu
-        add_note_action = menu.addAction("Sayfaya Not Ekle")
+        # DÜZELTME: Menü metni dil dosyasından (lang.py) çekiliyor
+        add_note_action = menu.addAction(t("menu_add_note"))
 
         is_pdf = getattr(self, "current_file_path", "").lower().endswith(".pdf")
         highlight_action.setEnabled(is_pdf)
         delete_highlight_action.setEnabled(is_pdf)
-        add_note_action.setEnabled(is_pdf) # Sadece PDF'lerde aktif olsun
+        add_note_action.setEnabled(is_pdf)
 
         selected = menu.exec(self.mapToGlobal(pos))
 
@@ -611,8 +637,6 @@ class PDFViewer(QScrollArea):
             self.create_highlight()
         elif selected == export_table_action:
             self.export_table_from_selection()
-
-        # Hem Not Ekleme hem de Vurgu/Not Silme işlemleri için SAĞ TIKLANAN kesin koordinatı kullanıyoruz.
         elif selected in (add_note_action, delete_highlight_action):
             page = self.doc[self.current_page]
             mat = pymupdf.Matrix(self.zoom, self.zoom)
@@ -625,7 +649,6 @@ class PDFViewer(QScrollArea):
             if selected == add_note_action:
                 self.addNoteRequested.emit(self.current_page, pdf_p.x, pdf_p.y)
             elif selected == delete_highlight_action:
-                # Önceden seçime (kutu çizmeye) ihtiyaç duymadan doğrudan imlecin altını sil komutu gönderir
                 self.deleteHighlightRequested.emit(self.current_page, pdf_p.x, pdf_p.y)
 
     def wheelEvent(self, event):

@@ -4,3 +4,5 @@ pytesseract
 Pillow
 pandas
 openpyxl
+python-docx
+python-odfpy
