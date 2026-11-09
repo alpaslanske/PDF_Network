@@ -481,7 +481,7 @@ class MainWindow(QMainWindow):
                 return i
 
         suffix = Path(file_path).suffix.lower()
-        is_office_doc = suffix in [".docx", ".odt", ".xlsx", ".ods"]
+        is_office_doc = suffix in [".docx", ".odt", ".xlsx", ".ods", ".pptx", ".ppt", ".odp", ".odg", ".odf", ".rtf", ".csv"]
 
         if is_office_doc:
             self.convert_progress = QProgressDialog(t("lbl_loading"), None, 0, 0, self)
@@ -533,11 +533,20 @@ class MainWindow(QMainWindow):
         default_dir = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
 
         file_filter = (
-            "Tüm Desteklenen Belgeler (*.pdf *.xlsx *.ods *.docx *.odt *.epub *.mobi *.fb2 *.cbz *.txt);;"
+            "Tüm Desteklenen Belgeler (*.pdf *.xlsx *.ods *.docx *.odt *.pptx *.odp *.odg *.odf *.epub *.mobi *.fb2 *.cbz *.txt *.rtf *.csv);;"
             "PDF ve E-Kitaplar (*.pdf *.epub *.mobi *.fb2 *.cbz);;"
-            "Desteklenen Ofis ve PDF Belgeleri (*.pdf *.xlsx *.ods *.docx *.odt);;"
+            "Desteklenen Ofis ve PDF Belgeleri (*.pdf *.ods *.odt *.odp *.odg *.odf *.xlsx *.docx *.pptx);;"
             "Tüm Dosyalar (*.*)"
         )
+        
+# LibreOffice
+# *.ods *.odt *.odp *.odg *.odf
+# MS OFfice
+# *.xlsx *.docx *.pptx
+# e-Kitap
+# *.epub *.mobi *.fb2 *.cbz
+# Rich Text
+# *.txt *.rtf *.csv
 
         filename, _ = QFileDialog.getOpenFileName(self, t("btn_open"), default_dir, file_filter)
         if not filename:
@@ -723,14 +732,55 @@ class MainWindow(QMainWindow):
 
     def show_tree_menu(self, pos):
         item = self.tree.itemAt(pos)
+        
+        # --- BOŞ ALANA SAĞ TIKLAMA KONTROLÜ ---
+        if not item:
+            m = QMenu()
+            a_new_gr = m.addAction(t("btn_group")) # Dil dosyasından "Grup Ekle" metnini alır
+            action = m.exec(self.tree.mapToGlobal(pos))
+            
+            if action == a_new_gr:
+                self.add_group() # Mevcut ana grup ekleme fonksiyonunu tetikler
+            return
+
         m = QMenu()
-        a_bm = m.addAction(t("menu_add_bookmark"))
-        r_bm = m.addAction(t("menu_rename_bookmark"))
-        d_bm = m.addAction(t("menu_del_bookmark"))
-        action = m.exec(self.tree.mapToGlobal(pos))
-        if action == a_bm: self.add_bookmark(item)
-        elif action == r_bm: self.rename_bookmark(item)
-        elif action == d_bm: self.delete_bookmark(item)
+        group_id = item.data(0, Qt.UserRole)
+        bookmark_id = item.data(0, Qt.UserRole + 1)
+        pdf_page = item.data(0, Qt.UserRole + 100)
+
+        if pdf_page is not None:
+            return
+
+        if group_id is not None:
+            # --- GRUP İÇİN SAĞ TIK MENÜSÜ ---
+            a_bm = m.addAction(t("menu_add_bookmark"))
+            a_sub = m.addAction(t("menu_add_subgroup"))
+            r_gr = m.addAction(t("dlg_rename_group"))   
+            d_gr = m.addAction(t("msg_delete_group_confirm").format(item.text(0))) 
+            
+            action = m.exec(self.tree.mapToGlobal(pos))
+            
+            if action == a_bm: 
+                self.add_bookmark(item)
+            elif action == a_sub:
+                self.add_subgroup_action(item)
+            elif action == r_gr: 
+                self.rename_group_action(item)
+            elif action == d_gr: 
+                self.delete_group_action(item)
+
+        elif bookmark_id is not None:
+            # --- YER İŞARETİ (BOOKMARK) İÇİN SAĞ TIK MENÜSÜ ---
+            r_bm = m.addAction(t("menu_rename_bookmark"))
+            d_bm = m.addAction(t("menu_del_bookmark"))
+            
+            action = m.exec(self.tree.mapToGlobal(pos))
+            
+            if action == r_bm: 
+                self.rename_bookmark(item)
+            elif action == d_bm: 
+                self.delete_bookmark(item)
+
 
     # ---------------- EKSİK OLAN VE GERİ GETİRİLEN FONKSİYONLAR ----------------
     def add_bookmark(self, item):
@@ -834,14 +884,25 @@ class MainWindow(QMainWindow):
         self.note_edit.setHtml(html_note.replace("\n", "<br>"))
         self.note_edit.setEnabled(True)
         self.btn_save_note.setEnabled(True)
+
     def rename_group_action(self, item):
-        if not item: return
+        if not item: 
+            return
         group_id = item.data(0, Qt.UserRole)
-        if group_id is None: return
-        name, ok = QInputDialog.getText(self, t("dlg_rename_group"), t("dlg_group_new_name"), text=item.text(0))
+        if group_id is None: 
+            return
+            
+        # text=item.text(0) parametresi ile mevcut grup adı kutucuğa otomatik doldurulur
+        name, ok = QInputDialog.getText(
+            self, 
+            t("dlg_rename_group"), 
+            t("dlg_group_new_name"), 
+            text=item.text(0)
+        )
         if ok and name.strip():
             self.db.rename_group(group_id, name.strip())
             self.load_groups()
+
 
     def delete_group_action(self, item):
         if not item: return

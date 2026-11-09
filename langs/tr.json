@@ -114,7 +114,7 @@
     "btn_dashboard": "🏠 Ana Ekran",
     "btn_back_to_doc": "📄 Belgeye Dön",
     "dlg_group_new_name": "Yeni Grup Adı:",
-    "msg_delete_group_confirm": "'{}' grubunu ve altındaki tüm yer imlerini silmek istediğinize emin misiniz?",
+    "msg_delete_group_confirm": "'{}' Grubunu Tüm İçeriği ile Sil",
     "err_convert_title": "Dönüştürme Hatası",
     "err_convert_msg": "Belge PDF formatına dönüştürülemedi.\nSisteminizde Microsoft Word veya LibreOffice kurulu olduğundan emin olun.",
     "err_open_title": "Açma Hatası",
