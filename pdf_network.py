@@ -770,14 +770,16 @@ class MainWindow(QMainWindow):
                 self.delete_group_action(item)
 
         elif bookmark_id is not None:
-            # --- YER İŞARETİ (BOOKMARK) İÇİN SAĞ TIK MENÜSÜ ---
             r_bm = m.addAction(t("menu_rename_bookmark"))
+            l_bm = m.addAction("🔗 Link Ekle (Çapraz PDF)") # YENİ EKLENEN SATIR
             d_bm = m.addAction(t("menu_del_bookmark"))
             
             action = m.exec(self.tree.mapToGlobal(pos))
             
             if action == r_bm: 
                 self.rename_bookmark(item)
+            elif action == l_bm:                   # YENİ EKLENEN SATIR
+                self.add_cross_pdf_link(item)      # YENİ EKLENEN SATIR
             elif action == d_bm: 
                 self.delete_bookmark(item)
 
