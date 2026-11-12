@@ -1,11 +1,8 @@
-# widgets/recent_file_card.py dosyasının TAMAMINI bu kompakt tasarımla değiştirebilirsin:
-
 #!/usr/bin/env python3
 from pathlib import Path
 from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
-from lang import t
+
 
 class RecentFileCard(QFrame):
     clicked = Signal(dict)
@@ -21,7 +18,7 @@ class RecentFileCard(QFrame):
         self.setObjectName("RecentCard")
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedWidth(280)
-        self.setMinimumHeight(90) # Thumbnail kalktığı için yüksekliği 240'tan 90'a düşürdük, zarif oldu!
+        self.setMinimumHeight(90)
 
         self.setStyleSheet("""
             QFrame#RecentCard {
@@ -39,7 +36,6 @@ class RecentFileCard(QFrame):
         main_layout.setContentsMargins(12, 12, 12, 12)
         main_layout.setSpacing(8)
 
-        # 1. Başlık Satırı
         header_layout = QHBoxLayout()
         path_str = self.file_data.get("path", "")
         suffix = Path(path_str).suffix.lower()
@@ -75,7 +71,6 @@ class RecentFileCard(QFrame):
         header_layout.addWidget(btn_delete)
         main_layout.addLayout(header_layout)
 
-        # 2. Alt Bilgi Satırı (Orta alan komple silindi, doğrudan alt bilgiye geçiyoruz)
         footer_layout = QHBoxLayout()
         page_no = self.file_data.get("page", 0) + 1
         lbl_page = QLabel(f" Sayfa {page_no}")
@@ -90,17 +85,12 @@ class RecentFileCard(QFrame):
         footer_layout.addWidget(lbl_page)
 
         date_raw = self.file_data.get("date", "-")
-        date_clean = date_raw.split(" ") if " " in date_raw else date_raw
+        date_clean = date_raw.split(" ")[0] if " " in date_raw else date_raw
         lbl_date = QLabel(f"⏱️ {date_clean}")
         lbl_date.setStyleSheet("color: #95a5a6; font-size: 11px;")
         footer_layout.addWidget(lbl_date, 0, Qt.AlignRight)
 
         main_layout.addLayout(footer_layout)
-
-    def set_pixmap(self, pixmap, status):
-        # Arka plan thread'i ne gönderirse göndersin artık resim basacak alan
-        # olmadığı için burayı tamamen boş bırakıp çakışmayı önlüyoruz.
-        pass
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:

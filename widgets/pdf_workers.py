@@ -6,12 +6,37 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtPrintSupport import QPrinter
-from pathlib import Path
+
+
+class PDFSearchWorker(QThread):
+    finished = Signal(list)
+    error = Signal(str)
+
+    def __init__(self, file_path, search_text):
+        super().__init__()
+        self.file_path = file_path
+        self.search_text = search_text
+
+    def run(self):
+        try:
+            doc = pymupdf.open(self.file_path)
+            results = []
+            for page_no in range(len(doc)):
+                if self.isInterruptionRequested():
+                    break
+                page = doc[page_no]
+                for rect in page.search_for(self.search_text):
+                    results.append((page_no, rect))
+            doc.close()
+            self.finished.emit(results)
+        except Exception as e:
+            self.error.emit(str(e))
+
 
 class TableExportWorker(QThread):
-    finished = Signal(str)  # Başarılı ise kaydedilen dosya yolunu döndürür
-    error = Signal(str)     # Hata oluşursa mesajı döndürür
-    no_table = Signal()     # Tablo bulunamazsa tetiklenir
+    finished = Signal(str)
+    error = Signal(str)
+    no_table = Signal()
 
     def __init__(self, file_path, page_no, x0, y0, x1, y1, save_filename):
         super().__init__()
@@ -42,7 +67,10 @@ class TableExportWorker(QThread):
                 return
 
             df = pd.DataFrame(data).fillna('').astype(str).replace(['NaN', 'None'], '', regex=True)
-            cleaned_rows = df.apply(lambda row: [str(val).replace('\n', ' ').strip() for val in row if str(val).strip() != ''], axis=1).tolist()
+            cleaned_rows = df.apply(
+                lambda row: [str(val).replace('\n', ' ').strip() for val in row if str(val).strip() != ''],
+                axis=1
+            ).tolist()
 
             if not cleaned_rows:
                 self.no_table.emit()
@@ -81,8 +109,9 @@ class TableExportWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+
 class PDFPrintWorker(QThread):
-    finished = Signal(str)  # Yazıcı adını döndürür
+    finished = Signal(str)
     error = Signal(str)
 
     def __init__(self, file_path, printer, from_page, to_page):
@@ -113,75 +142,3 @@ class PDFPrintWorker(QThread):
             self.finished.emit(self.printer.printerName())
         except Exception as e:
             self.error.emit(str(e))
-
-
-from PySide6.QtCore import QRunnable, QObject, Signal
-import pymupdf
-from pathlib import Path
-
-class ThumbnailSignals(QObject):
-    finished_data = Signal(bytes, int, int, int, str, object)
-
-class ThumbnailWorker(QRunnable):
-    """Kapak resimlerini global havuzda (QThreadPool) sıfır çökme riskiyle üreten akıllı işçi."""
-    def __init__(self, file_path, card_ref):
-        super().__init__()
-        self.file_path = file_path
-        self.card_ref = card_ref
-        self.signals = ThumbnailSignals()
-
-    def run(self):
-        import os
-        import pymupdf
-        import tempfile
-        from pathlib import Path
-
-        if not self.file_path:
-            self.signals.finished_data.emit(b"", 0, 0, 0, "error", self.card_ref)
-            return
-
-        path = Path(self.file_path)
-        suffix = path.suffix.lower()
-
-        try:
-            hedef_okuma_yolu = str(path)
-
-            # EĞER HEDEF BİR EXCEL VEYA WORD BELGESİYSE:
-            # Silinen geçici klasör yerine, ana uygulamanın asla silmediği kararlı taze önbellek PDF'ini buluyoruz!
-            if suffix in [".docx", ".odt", ".xlsx", ".ods"]:
-                try:
-                    file_stat = path.stat()
-                    # Ana uygulamanın kaydederken kullandığı benzersiz ID algoritmasının birebir aynısı
-                    unique_id = f"{path.stem}_{file_stat.st_size}_{int(file_stat.st_mtime)}"
-
-                    # Ortak ve kalıcı olan PDF konumu
-                    final_cache_pdf = Path(tempfile.gettempdir()) / "PDF_Network_Cache" / f"{unique_id}.pdf"
-
-                    if final_cache_pdf.exists() and final_cache_pdf.stat().st_size > 0:
-                        hedef_okuma_yolu = str(final_cache_pdf)
-                    else:
-                        # Eğer henüz dönüştürme bitmediyse veya dosya yoksa yükleniyor durumunda beklet
-                        self.signals.finished_data.emit(b"", 0, 0, 0, "office_doc", self.card_ref)
-                        return
-                except:
-                    self.signals.finished_data.emit(b"", 0, 0, 0, "error", self.card_ref)
-                    return
-
-            # Artık elimizde kesinlikle fiziksel olarak var olan bir PDF/Kitap dökümanı var!
-            doc = pymupdf.open(hedef_okuma_yolu)
-            if doc and len(doc) > 0:
-                page = doc[0] # İlk sayfayı kapak resmi (thumbnail) olarak alıyoruz
-
-                # Kapak kalitesini pikselleşmeden net almak için hafif bir matris ölçeği veriyoruz
-                pix = page.get_pixmap(matrix=pymupdf.Matrix(0.35, 0.35))
-
-                # Ham bayt verilerini güvenle ana thread'e (RecentFileCard'a) fırlatıyoruz
-                self.signals.finished_data.emit(pix.samples, pix.width, pix.height, pix.stride, "success", self.card_ref)
-                doc.close()
-            else:
-                self.signals.finished_data.emit(b"", 0, 0, 0, "empty", self.card_ref)
-
-        except Exception as e:
-            print(f"Thumbnail İşleyici Hatası: {e}")
-            self.signals.finished_data.emit(b"", 0, 0, 0, "error", self.card_ref)
-
