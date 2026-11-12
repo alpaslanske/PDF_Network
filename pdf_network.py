@@ -354,12 +354,24 @@ class MainWindow(QMainWindow):
         self.search_results = QListWidget()
         self.search_results.itemDoubleClicked.connect(self.goto_search_result)
 
+        self.search_mode = QComboBox()
+        self.search_mode.addItems(["📄 Açık Belge", "🌐 Tüm Kütüphane & Notlar"])
+
+        self.pdf_search = QLineEdit()
+        self.pdf_search.returnPressed.connect(self.search_in_pdf)
+        self.btn_search.clicked.connect(self.search_in_pdf)
+
+        self.search_results = QListWidget()
+        self.search_results.itemDoubleClicked.connect(self.goto_search_result)
+
         search_panel = QWidget()
         search_layout = QVBoxLayout(search_panel)
         search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.addWidget(self.search_mode)
         search_layout.addWidget(self.pdf_search)
         search_layout.addWidget(self.btn_search)
         search_layout.addWidget(self.search_results)
+
 
         self.splitter = QSplitter()
         self.splitter.addWidget(self.left_panel)
@@ -800,8 +812,15 @@ class MainWindow(QMainWindow):
 
     def search_in_pdf(self):
         text_val = self.pdf_search.text().strip()
+        if not text_val:
+            return
+
+        if self.search_mode.currentIndex() == 1:
+            self.search_global_library(text_val)
+            return
+
         viewer = self.get_current_viewer()
-        if not text_val or not viewer or not viewer.current_file_path:
+        if not viewer or not viewer.current_file_path:
             return
 
         if self.search_worker and self.search_worker.isRunning():
@@ -817,14 +836,67 @@ class MainWindow(QMainWindow):
         self.search_worker.error.connect(self._on_search_error)
         self.search_worker.start()
 
+    def search_global_library(self, query):
+        q_lower = query.lower()
+        self.search_results.clear()
+        bookmarks = self.db.get_bookmarks()
+        groups = dict((gid, name) for gid, name, _ in self.db.get_groups())
+        matches = []
+        searched_files = set()
+
+        for b in bookmarks:
+            bid, title, pdf_path, page, group_id = b[:5]
+            searched_files.add(pdf_path)
+            full_b = self.db.get_bookmark(bid)
+            note = ""
+            if full_b and len(full_b) > 7:
+                _, _, _, _, _, _, _, raw_note = full_b[:8]
+                note = raw_note or ""
+
+            if q_lower in (title or "").lower() or q_lower in note.lower():
+                group_name = groups.get(group_id, "Genel")
+                file_name = Path(pdf_path).name
+                preview = f"📌 [{group_name}] {title}\n    📄 {file_name} (Sayfa {page + 1})"
+                if q_lower in note.lower():
+                    snippet = note.replace("\n", " ")[:60]
+                    preview += f"\n    📝 Not: {snippet}..."
+                matches.append((("global_bookmark", bid), preview))
+
+        for item in getattr(self, "pdf_history", []):
+            p_str = item.get("path", "") if isinstance(item, dict) else item
+            if p_str:
+                searched_files.add(p_str)
+
+        for f_path in searched_files:
+            p_obj = Path(f_path)
+            if p_obj.exists() and p_obj.suffix.lower() == ".pdf":
+                try:
+                    doc = pymupdf.open(str(p_obj))
+                    for p_idx in range(len(doc)):
+                        rects = doc[p_idx].search_for(query)
+                        if rects:
+                            preview = f"📄 {p_obj.name} (Sayfa {p_idx + 1})\n    🔍 {len(rects)} eşleşme bulundu"
+                            matches.append((("global_pdf", str(p_obj), p_idx, rects), preview))
+                    doc.close()
+                except Exception:
+                    pass
+
+        self.search_results.addItem(f"Kütüphane Eşleşmesi: {len(matches)}")
+        for payload, preview in matches:
+            itm = QListWidgetItem(preview)
+            itm.setData(Qt.UserRole, payload)
+            self.search_results.addItem(itm)
+
+
     def _on_search_finished(self, pages):
         self.btn_search.setEnabled(True)
         self.search_results.clear()
         self.search_results.addItem(f"Toplam Eşleşme: {len(pages)}")
         for p, r in pages:
             itm = QListWidgetItem(f"Sayfa {p + 1}")
-            itm.setData(Qt.UserRole, (p, [r]))
+            itm.setData(Qt.UserRole, (p, r))
             self.search_results.addItem(itm)
+
 
     def _on_search_error(self, err_msg):
         self.btn_search.setEnabled(True)
@@ -832,14 +904,55 @@ class MainWindow(QMainWindow):
         self.search_results.addItem(f"Arama hatası: {err_msg}")
 
     def goto_search_result(self, item):
-        v = self.get_current_viewer()
-        if v and item.data(Qt.UserRole):
-            self.record_navigation_point()
+        data = item.data(Qt.UserRole)
+        if not data:
+            return
 
-        if v and item.data(Qt.UserRole):
-            p, r = item.data(Qt.UserRole)
+        if isinstance(data, tuple) and data[0] == "global_bookmark":
+            _, bid = data
+            bookmark = self.db.get_bookmark(bid)
+            if not bookmark:
+                return
+
+            self.record_navigation_point()
+            self.active_bookmark_id = bid
+            _, _, pdf_path, page, _ = bookmark[:5]
+            x, y, current_note = 0, 0, ""
+            if len(bookmark) > 7:
+                _, _, _, _, _, bx, by, bnote = bookmark[:8]
+                x, y, current_note = bx or 0, by or 0, bnote or ""
+
+            if Path(pdf_path).exists():
+                self.open_in_tab(pdf_path, page, x, y)
+                self.note_edit.setReadOnly(True)
+                html_note = current_note
+                for full_match, link_content in re.findall(r'(\[\[([^\]]+)\]\])', current_note):
+                    html_link = f'<a href="{link_content}" style="color: #0078ff; font-weight: bold; text-decoration: none;">{full_match}</a>'
+                    html_note = html_note.replace(full_match, html_link)
+                self.note_edit.setHtml(html_note.replace("\n", "<br>"))
+                self.note_edit.setEnabled(True)
+                self.btn_save_note.setEnabled(True)
+            else:
+                QMessageBox.warning(self, t("msg_error"), t("err_file_relocate").format(pdf_path))
+            return
+
+        if isinstance(data, tuple) and data[0] == "global_pdf":
+            _, pdf_path, page_no, rects = data
+            if Path(pdf_path).exists():
+                self.record_navigation_point()
+                self.open_in_tab(pdf_path, page_no)
+                v = self.get_current_viewer()
+                if v:
+                    v.set_highlight([(page_no, r) for r in rects])
+                    v.render_page()
+            return
+
+        v = self.get_current_viewer()
+        if v:
+            self.record_navigation_point()
+            p, r = data
             v.goto_page(p)
-            v.set_highlight(r)
+            v.set_highlight([(p, r)])
             v.render_page()
 
     def filter_tree(self, text):
