@@ -47,6 +47,8 @@ class PDFViewer(QScrollArea):
     page_changed = Signal(int)
     exportTableRequested = Signal(int, float, float, float, float)
     addNoteRequested = Signal(int, float, float)
+    linkClicked = Signal()
+
 
     def __init__(self):
         super().__init__()
@@ -385,6 +387,8 @@ class PDFViewer(QScrollArea):
                     except Exception: pass
 
             if target_page is not None and 0 <= target_page < len(self.doc):
+                self.linkClicked.emit()
+
                 if target_page != self.current_page:
                     self.goto_page(target_page)
                     QApplication.processEvents()

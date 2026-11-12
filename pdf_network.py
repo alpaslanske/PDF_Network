@@ -182,6 +182,13 @@ class MainWindow(QMainWindow):
         self.dash_title = QLabel()
         self.dash_recent_lbl = QLabel()
         self.btn_dashboard = QPushButton()
+        
+        self.btn_nav_back = QPushButton("⬅️")
+        self.btn_nav_forward = QPushButton("➡️")
+        self.nav_back_stack = []
+        self.nav_forward_stack = []
+        self.is_navigating_history = False
+
 
         self.settings_file = self.proje_ana_dizini / "data" / "settings.json"
         self.selected_group_id = None
@@ -258,6 +265,16 @@ class MainWindow(QMainWindow):
         toolbar.setSpacing(4)
 
         self.btn_dashboard.clicked.connect(self.toggle_dashboard)
+
+        self.btn_nav_back.setText("◀")
+        self.btn_nav_forward.setText("▶")
+        self.btn_nav_back.clicked.connect(self.navigate_back)
+        self.btn_nav_forward.clicked.connect(self.navigate_forward)
+        self.btn_nav_back.setEnabled(False)
+        self.btn_nav_forward.setEnabled(False)
+        self.btn_nav_back.setMinimumWidth(36)
+        self.btn_nav_forward.setMinimumWidth(36)       
+        
         self.btn_open.clicked.connect(self.open_pdf)
         self.btn_prev.clicked.connect(self.previous_page)
         self.btn_next.clicked.connect(self.next_page)
@@ -274,13 +291,18 @@ class MainWindow(QMainWindow):
         self.combo_lang.addItems(["🇹🇷 TR", "🇬🇧 EN"])
         self.combo_lang.setMinimumWidth(85)
         self.combo_lang.currentIndexChanged.connect(self.lang_degistir)
-        for btn in (self.btn_dashboard, self.btn_print, self.btn_open, self.btn_prev, self.btn_next,
+        for btn in (self.btn_dashboard, self.btn_nav_back, self.btn_nav_forward, self.btn_print, self.btn_open, self.btn_prev, self.btn_next,
                     self.btn_zoom_in, self.btn_zoom_out, self.btn_group,
                     self.btn_toggle, self.btn_export, self.page_label,
                     self.zoom_label, self.combo_lang):
             btn.setMaximumHeight(28)
 
+
         toolbar.addWidget(self.btn_dashboard)
+        
+        toolbar.addWidget(self.btn_nav_back)
+        toolbar.addWidget(self.btn_nav_forward)       
+        
         toolbar.addWidget(self.btn_open)
         toolbar.addWidget(self.btn_print)
         toolbar.addWidget(self.btn_export)
@@ -437,6 +459,71 @@ class MainWindow(QMainWindow):
             self.btn_dashboard.setText(t("btn_dashboard"))
             self.btn_dashboard.setEnabled(True)
 
+    def record_navigation_point(self):
+        if self.is_navigating_history:
+            return
+        viewer = self.get_current_viewer()
+        if not viewer or not getattr(viewer, "doc", None):
+            return
+        current_path = getattr(viewer, "original_file_path", viewer.current_file_path)
+        current_page = viewer.current_page
+        x = viewer.horizontalScrollBar().value() / viewer.zoom
+        y = viewer.verticalScrollBar().value() / viewer.zoom
+
+        point = (current_path, current_page, x, y)
+        if self.nav_back_stack and self.nav_back_stack[-1][:2] == (current_path, current_page):
+            return
+
+        self.nav_back_stack.append(point)
+        if len(self.nav_back_stack) > 50:
+            self.nav_back_stack.pop(0)
+        self.nav_forward_stack.clear()
+        self.update_nav_buttons()
+
+    def update_nav_buttons(self):
+        self.btn_nav_back.setEnabled(len(self.nav_back_stack) > 0)
+        self.btn_nav_forward.setEnabled(len(self.nav_forward_stack) > 0)
+
+    def _get_current_nav_point(self):
+        viewer = self.get_current_viewer()
+        if not viewer or not getattr(viewer, "doc", None):
+            return None
+        current_path = getattr(viewer, "original_file_path", viewer.current_file_path)
+        x = viewer.horizontalScrollBar().value() / viewer.zoom
+        y = viewer.verticalScrollBar().value() / viewer.zoom
+        return (current_path, viewer.current_page, x, y)
+
+    def navigate_back(self):
+        if not self.nav_back_stack:
+            return
+        current_pt = self._get_current_nav_point()
+        if current_pt:
+            self.nav_forward_stack.append(current_pt)
+
+        target_path, target_page, x, y = self.nav_back_stack.pop()
+        self.is_navigating_history = True
+        try:
+            self.open_in_tab(target_path, target_page, x, y)
+        finally:
+            self.is_navigating_history = False
+            self.update_nav_buttons()
+
+    def navigate_forward(self):
+        if not self.nav_forward_stack:
+            return
+        current_pt = self._get_current_nav_point()
+        if current_pt:
+            self.nav_back_stack.append(current_pt)
+
+        target_path, target_page, x, y = self.nav_forward_stack.pop()
+        self.is_navigating_history = True
+        try:
+            self.open_in_tab(target_path, target_page, x, y)
+        finally:
+            self.is_navigating_history = False
+            self.update_nav_buttons()
+
+
     def add_to_history(self, pdf_path, page):
         history = getattr(self, "pdf_history", [])
         history = [item for item in history if (item.get("path") if isinstance(item, dict) else item) != pdf_path]
@@ -509,6 +596,7 @@ class MainWindow(QMainWindow):
         )
         new_viewer.addNoteRequested.connect(self.add_page_note)
         new_viewer.page_changed.connect(self.update_page_label)
+        new_viewer.linkClicked.connect(self.record_navigation_point)
 
         new_viewer.open_pdf(active_open_path)
         new_viewer.goto_position(page, x, y)
@@ -746,6 +834,9 @@ class MainWindow(QMainWindow):
     def goto_search_result(self, item):
         v = self.get_current_viewer()
         if v and item.data(Qt.UserRole):
+            self.record_navigation_point()
+
+        if v and item.data(Qt.UserRole):
             p, r = item.data(Qt.UserRole)
             v.goto_page(p)
             v.set_highlight(r)
@@ -760,6 +851,7 @@ class MainWindow(QMainWindow):
         c_vis = any(self.filter_item(item.child(i), text) for i in range(item.childCount()))
         item.setHidden(not (vis or c_vis or text == ""))
         return vis or c_vis
+        
     def show_tree_menu(self, pos):
         item = self.tree.itemAt(pos)
         if not item:
@@ -845,7 +937,9 @@ class MainWindow(QMainWindow):
         if QApplication.mouseButtons() == Qt.RightButton:
             return
 
+        self.record_navigation_point()
         pdf_page = item.data(0, Qt.UserRole + 100)
+        
         if pdf_page is not None:
             viewer = self.get_current_viewer()
             if viewer:
@@ -975,8 +1069,10 @@ class MainWindow(QMainWindow):
             self.note_edit.setHtml(html_note.replace("\n", "<br>"))
         except Exception as e:
             QMessageBox.warning(self, t("msg_error"), t("err_save_note").format(e))
+            
     def handle_knowledge_link(self, url):
         try:
+            self.record_navigation_point()
             raw_str = url.toString().replace("link://", "").strip().rstrip("/")
             if not raw_str and url.isValid():
                 raw_str = url.toDisplayString().replace("link://", "").strip().rstrip("/")
@@ -1151,8 +1247,10 @@ class MainWindow(QMainWindow):
         try:
             page_no = int(self.page_edit.text())
             if 1 <= page_no <= viewer.doc.page_count:
+                self.record_navigation_point()
                 viewer.current_page = page_no - 1
                 viewer.render_page()
+
         except ValueError:
             pass
         finally:
